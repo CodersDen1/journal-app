@@ -36,26 +36,51 @@ export function SettingRow({
   const chevron = (showChevron ?? Boolean(onPress)) && !right;
   const labelColor = destructive ? colors.recording : colors.text;
 
+  // A text value shares the row with the label: the label keeps its width on
+  // one line and the value fills the rest, ellipsizing (e.g. a long email)
+  // instead of forcing the label to wrap.
+  const hasTextValue = value !== undefined && !right;
+
+  const iconNode = icon ? (
+    <View style={styles.iconWrap}>
+      <Ionicons name={icon} size={20} color={destructive ? colors.recording : colors.mutedText} />
+    </View>
+  ) : null;
+
+  const chevronNode = chevron ? (
+    <Ionicons name="chevron-forward" size={18} color={colors.mutedText} style={styles.chevron} />
+  ) : null;
+
   const body = (
     <View style={[styles.row, last && styles.rowLast]}>
-      {icon ? (
-        <View style={styles.iconWrap}>
-          <Ionicons name={icon} size={20} color={destructive ? colors.recording : colors.mutedText} />
-        </View>
-      ) : null}
+      {iconNode}
 
-      <View style={styles.textWrap}>
-        <Text style={[type.body, { color: labelColor }]}>{label}</Text>
-        {description ? <Text style={[type.caption, styles.description]}>{description}</Text> : null}
-      </View>
-
-      {right ? (
-        <View style={styles.rightSlot}>{right}</View>
+      {hasTextValue ? (
+        <>
+          <Text style={[type.body, styles.labelInline, { color: labelColor }]} numberOfLines={1}>
+            {label}
+          </Text>
+          <Text style={[type.bodyMuted, styles.valueInline]} numberOfLines={1} ellipsizeMode="tail">
+            {value}
+          </Text>
+          {chevronNode}
+        </>
       ) : (
-        <View style={styles.rightSlot}>
-          {value ? <Text style={[type.bodyMuted, styles.value]}>{value}</Text> : null}
-          {chevron ? <Ionicons name="chevron-forward" size={18} color={colors.mutedText} /> : null}
-        </View>
+        <>
+          <View style={styles.textWrap}>
+            <Text style={[type.body, { color: labelColor }]} numberOfLines={1}>
+              {label}
+            </Text>
+            {description ? (
+              <Text style={[type.caption, styles.description]} numberOfLines={2}>
+                {description}
+              </Text>
+            ) : null}
+          </View>
+          <View style={styles.rightSlot}>
+            {right ?? chevronNode}
+          </View>
+        </>
       )}
     </View>
   );
@@ -83,6 +108,9 @@ const styles = StyleSheet.create({
   textWrap: { flex: 1, paddingRight: spacing.md },
   description: { marginTop: 2 },
   rightSlot: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  value: { color: colors.mutedText },
+  // Inline label + value (single-line row)
+  labelInline: { flexShrink: 0, paddingRight: spacing.md },
+  valueInline: { flex: 1, textAlign: 'right', color: colors.mutedText },
+  chevron: { marginLeft: spacing.sm },
   pressed: { opacity: 0.6 },
 });

@@ -63,7 +63,7 @@ func Load() Config {
 		GeminiAPIKey:    os.Getenv("GEMINI_API_KEY"),
 		GeminiModel:     getenv("GEMINI_MODEL", "gemini-2.5-flash"),
 		GeminiTTSModel:  getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts"),
-		StorageBucket:   strings.TrimSpace(os.Getenv("FIREBASE_STORAGE_BUCKET")),
+		StorageBucket:   normalizeBucket(os.Getenv("FIREBASE_STORAGE_BUCKET")),
 		CORSOrigins:     parseOrigins(getenv("CORS_ORIGINS", "*")),
 	}
 
@@ -89,9 +89,24 @@ func (c Config) StorageEnabled() bool {
 }
 
 // LogEffective logs the resolved auth/store modes. It never logs secrets.
+// The storage bucket name is not a secret and is logged to aid diagnosis.
 func (c Config) LogEffective() {
-	log.Printf("config: AUTH_MODE=%s STORE=%s PORT=%s gemini=%s storage=%s",
-		c.AuthMode, c.Store, c.Port, geminiState(c.GeminiAPIKey), storageState(c.StorageEnabled()))
+	bucket := c.StorageBucket
+	if bucket == "" {
+		bucket = "(unset)"
+	}
+	log.Printf("config: AUTH_MODE=%s STORE=%s PORT=%s gemini=%s storage=%s bucket=%s",
+		c.AuthMode, c.Store, c.Port, geminiState(c.GeminiAPIKey), storageState(c.StorageEnabled()), bucket)
+}
+
+// normalizeBucket accepts either a bare bucket name
+// ("my-app.firebasestorage.app") or a gs:// URI and returns the bare name the
+// Firebase Admin SDK expects (no scheme, no trailing slash).
+func normalizeBucket(raw string) string {
+	b := strings.TrimSpace(raw)
+	b = strings.TrimPrefix(b, "gs://")
+	b = strings.TrimSuffix(b, "/")
+	return b
 }
 
 func storageState(enabled bool) string {

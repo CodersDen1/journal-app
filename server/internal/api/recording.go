@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -80,6 +81,7 @@ func (a *API) putRecording(w http.ResponseWriter, r *http.Request) {
 
 	path := recordingPath(uid, r.PathValue("id"))
 	if err := a.blobs.Put(r.Context(), path, recordingMime(header.Filename), data); err != nil {
+		log.Printf("recording: storage put %s failed: %v", path, err)
 		writeError(w, http.StatusInternalServerError, "failed to store recording")
 		return
 	}
@@ -102,6 +104,7 @@ func (a *API) getRecording(w http.ResponseWriter, r *http.Request) {
 	path := recordingPath(uid, r.PathValue("id"))
 	data, contentType, found, err := a.blobs.Get(r.Context(), path)
 	if err != nil {
+		log.Printf("recording: storage get %s failed: %v", path, err)
 		writeError(w, http.StatusInternalServerError, "failed to load recording")
 		return
 	}

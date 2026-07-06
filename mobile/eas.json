@@ -1,0 +1,40 @@
+{
+  "cli": {
+    "version": ">= 12.0.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "http://104.156.249.42:4445",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "63972460611-6vtmu2e2jhf21b172f3qel5nll4m3gev.apps.googleusercontent.com"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "http://104.156.249.42:4445",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "63972460611-6vtmu2e2jhf21b172f3qel5nll4m3gev.apps.googleusercontent.com"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "http://104.156.249.42:4445",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "63972460611-6vtmu2e2jhf21b172f3qel5nll4m3gev.apps.googleusercontent.com"
+      }
+    }
+  },
+  "submit": {}
+}

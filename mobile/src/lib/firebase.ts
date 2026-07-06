@@ -38,12 +38,19 @@ export async function signInWithGoogle(): Promise<void> {
   await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
 
   const response = await GoogleSignin.signIn();
-  const idToken = response.type === 'success' ? response.data.idToken : null;
-  if (!idToken) {
+  if (response.type !== 'success') {
     throw new Error('Google sign-in was cancelled.');
   }
 
-  const credential = GoogleAuthProvider.credential(idToken);
+  // Fetch both tokens explicitly. Passing the access token (not just the id
+  // token) avoids "accessToken cannot be empty" from the Firebase credential
+  // under google-signin's Credential Manager flow.
+  const { idToken, accessToken } = await GoogleSignin.getTokens();
+  if (!idToken) {
+    throw new Error('Google sign-in returned no ID token.');
+  }
+
+  const credential = GoogleAuthProvider.credential(idToken, accessToken);
   await signInWithCredential(getAuth(), credential);
 }
 

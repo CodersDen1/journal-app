@@ -16,22 +16,34 @@ import { useJournals } from '../state/JournalsContext';
 import { useSnackbar } from '../state/SnackbarContext';
 import { colors, radius, spacing, type } from '../theme';
 
+type ListenMode = 'recording' | 'tts';
+
 /**
- * "Listen" — plays Gemini-generated speech ("audio of the text") for an entry.
+ * "Listen" player for the detail screen.
  *
- * The WAV is generated once (server-side, persisted to Firebase Storage) and
- * cached on-device keyed by the entry's updatedAt, so re-opening the detail
- * page reuses the local file instead of regenerating. A new version is fetched
- * only when the text changes (updatedAt changes) or the cache is gone.
+ *  - Voice entries (mode="recording") play the ORIGINAL recording: the on-device
+ *    file if it's still here, otherwise the copy stored in Firebase Storage.
+ *  - Text entries (mode="tts") play Gemini-generated "audio of the text",
+ *    generated once server-side and cached on-device by version.
  */
-function ListenSection({ entryId, version }: { entryId: string; version: string }) {
+function ListenSection({
+  entryId,
+  version,
+  mode,
+  localUri,
+}: {
+  entryId: string;
+  version: string;
+  mode: ListenMode;
+  localUri?: string | null;
+}) {
   const [phase, setPhase] = useState<'idle' | 'loading' | 'error'>('idle');
   const [fileUri, setFileUri] = useState<string | null>(null);
   const [errorText, setErrorText] = useState('');
   const autoplay = useRef(false);
 
-  // Persistent, version-keyed cache file.
-  const cacheFile = `${FileSystem.documentDirectory ?? ''}tts-${entryId}-${version.replace(/\D/g, '')}.wav`;
+  const ext = mode === 'recording' ? 'm4a' : 'wav';
+  const cacheFile = `${FileSystem.documentDirectory ?? ''}${mode}-${entryId}-${version.replace(/\D/g, '')}.${ext}`;
 
   const source = useMemo(() => (fileUri ? { uri: fileUri } : null), [fileUri]);
   const player = useAudioPlayer(source);
@@ -41,17 +53,26 @@ function ListenSection({ entryId, version }: { entryId: string; version: string 
   const position = status.currentTime ?? 0;
   const progress = total > 0 ? Math.min(1, position / total) : 0;
 
-  // Reuse an already-generated file if it's on this device.
+  // Reuse audio already on this device: for a recording prefer the original
+  // local file; otherwise a previously downloaded/generated cache file.
   useEffect(() => {
     let active = true;
-    void FileSystem.getInfoAsync(cacheFile).then((info) => {
-      if (active && info.exists) setFileUri(cacheFile);
-    });
+    (async () => {
+      if (mode === 'recording' && localUri) {
+        const info = await FileSystem.getInfoAsync(localUri).catch(() => null);
+        if (active && info?.exists) {
+          setFileUri(localUri);
+          return;
+        }
+      }
+      const cached = await FileSystem.getInfoAsync(cacheFile).catch(() => null);
+      if (active && cached?.exists) setFileUri(cacheFile);
+    })();
     return () => {
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cacheFile]);
+  }, [cacheFile, mode, localUri]);
 
   useEffect(() => {
     if (fileUri && autoplay.current) {
@@ -61,32 +82,45 @@ function ListenSection({ entryId, version }: { entryId: string; version: string 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fileUri]);
 
-  const generate = async () => {
+  // Fetch from the backend (original recording, or generate TTS), then play.
+  const prepare = async () => {
     setPhase('loading');
     setErrorText('');
     try {
       const token = await fetchIdToken();
       const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-      autoplay.current = true;
-      const res = await FileSystem.downloadAsync(api.ttsUrl(entryId), cacheFile, { headers });
+      const url = mode === 'recording' ? api.recordingUrl(entryId) : api.ttsUrl(entryId);
+      const res = await FileSystem.downloadAsync(url, cacheFile, { headers });
       if (res.status === 200) {
+        autoplay.current = true;
         setFileUri(res.uri);
         setPhase('idle');
-      } else {
-        autoplay.current = false;
-        setErrorText(
-          res.status === 503
+        return;
+      }
+      // A recording that isn't stored server-side can still be the local file.
+      if (mode === 'recording' && localUri) {
+        autoplay.current = true;
+        setFileUri(localUri);
+        setPhase('idle');
+        return;
+      }
+      setErrorText(
+        mode === 'recording'
+          ? "This recording isn't available."
+          : res.status === 503
             ? "Text-to-speech isn't configured on the server."
             : res.status === 404
               ? "This entry isn't synced to your account yet."
-              : res.status === 401
-                ? 'Please sign in again.'
-                : `Couldn't generate audio (${res.status}).`,
-        );
-        setPhase('error');
-      }
+              : `Couldn't generate audio (${res.status}).`,
+      );
+      setPhase('error');
     } catch {
-      autoplay.current = false;
+      if (mode === 'recording' && localUri) {
+        autoplay.current = true;
+        setFileUri(localUri);
+        setPhase('idle');
+        return;
+      }
       setErrorText("Couldn't reach the server.");
       setPhase('error');
     }
@@ -95,7 +129,7 @@ function ListenSection({ entryId, version }: { entryId: string; version: string 
   const onPress = () => {
     if (phase === 'loading') return;
     if (!fileUri) {
-      void generate();
+      void prepare();
       return;
     }
     if (status.playing) {
@@ -106,11 +140,14 @@ function ListenSection({ entryId, version }: { entryId: string; version: string 
     }
   };
 
+  const idleHint = mode === 'recording' ? 'Play the recording' : 'Listen to this entry';
+  const loadingHint = mode === 'recording' ? 'Loading recording…' : 'Generating audio…';
+
   return (
     <View>
       <Text style={[type.overline, styles.listenLabel]}>Listen</Text>
       {phase === 'error' ? (
-        <Pressable onPress={() => void generate()} style={styles.listenError} accessibilityRole="button">
+        <Pressable onPress={() => void prepare()} style={styles.listenError} accessibilityRole="button">
           <Ionicons name="refresh" size={16} color={colors.secondary} />
           <Text style={[type.caption, styles.listenErrorText]}>{errorText} Tap to try again.</Text>
         </Pressable>
@@ -141,9 +178,7 @@ function ListenSection({ entryId, version }: { entryId: string; version: string 
                 </View>
               </>
             ) : (
-              <Text style={type.bodyMuted}>
-                {phase === 'loading' ? 'Generating audio…' : 'Listen to this entry'}
-              </Text>
+              <Text style={type.bodyMuted}>{phase === 'loading' ? loadingHint : idleHint}</Text>
             )}
           </View>
         </View>
@@ -160,13 +195,6 @@ export function JournalDetailScreen() {
   const snackbar = useSnackbar();
 
   const entry = getEntry(route.params.entryId);
-  const bodyText = (entry?.text || entry?.transcript || '').trim();
-
-  // "Play original" — the raw recording, for voice entries.
-  const originalUri = entry?.type === 'voice' ? entry.audioUri : null;
-  const originalSource = useMemo(() => (originalUri ? { uri: originalUri } : null), [originalUri]);
-  const original = useAudioPlayer(originalSource);
-  const originalStatus = useAudioPlayerStatus(original);
 
   if (!entry) {
     return (
@@ -176,7 +204,12 @@ export function JournalDetailScreen() {
     );
   }
 
+  const isVoice = entry.type === 'voice';
+  const bodyText = (entry.text || entry.transcript || '').trim();
   const paragraphs = bodyText ? bodyText.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean) : [];
+
+  // Voice → play the original recording. Text → generated "audio of the text".
+  const canListen = isVoice ? Boolean(entry.audioUri) || Boolean(user) : Boolean(user && bodyText);
 
   const onArchive = () => {
     archiveEntry(entry.id);
@@ -196,21 +229,7 @@ export function JournalDetailScreen() {
     ]);
   };
 
-  const playOriginal = () => {
-    if (!originalUri) return;
-    if (originalStatus.playing) {
-      original.pause();
-      return;
-    }
-    if (originalStatus.didJustFinish) void original.seekTo(0);
-    original.play();
-  };
-
-  const canListen = Boolean(user && bodyText);
-  const hasOriginal = entry.type === 'voice' && Boolean(entry.audioUri);
-
   const actions: { label: string; onPress: () => void }[] = [
-    ...(hasOriginal ? [{ label: originalStatus.playing ? 'Pause' : 'Play original', onPress: playOriginal }] : []),
     { label: 'Edit', onPress: () => navigation.navigate('CreateJournal', { entryId: entry.id }) },
     { label: 'Reflect', onPress: () => navigation.navigate('Tabs', { screen: 'Insights' }) },
     { label: '⋯', onPress: openMenu },
@@ -252,7 +271,12 @@ export function JournalDetailScreen() {
 
       {canListen ? (
         <View style={styles.block}>
-          <ListenSection entryId={entry.id} version={entry.updatedAt} />
+          <ListenSection
+            entryId={entry.id}
+            version={entry.updatedAt}
+            mode={isVoice ? 'recording' : 'tts'}
+            localUri={isVoice ? entry.audioUri : null}
+          />
         </View>
       ) : null}
 
@@ -275,7 +299,7 @@ const styles = StyleSheet.create({
   paragraph: { marginBottom: spacing.lg },
   block: { marginBottom: spacing.xl },
 
-  // Listen (TTS) player
+  // Listen player
   listenLabel: { marginBottom: spacing.sm },
   listenPlayer: {
     flexDirection: 'row',

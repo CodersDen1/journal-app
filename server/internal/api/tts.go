@@ -78,6 +78,7 @@ func (a *API) tts(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusServiceUnavailable, "text-to-speech is not configured")
 				return
 			}
+			log.Printf("tts: synthesize failed: %v", err)
 			writeError(w, http.StatusBadGateway, "text-to-speech failed")
 			return
 		}
@@ -97,6 +98,7 @@ func (a *API) ttsFromStorage(w http.ResponseWriter, r *http.Request, uid, entryI
 
 	wav, _, found, err := a.blobs.Get(r.Context(), objectPath)
 	if err != nil {
+		log.Printf("tts: storage get %s failed: %v", objectPath, err)
 		writeError(w, http.StatusInternalServerError, "failed to load audio")
 		return
 	}
@@ -111,6 +113,7 @@ func (a *API) ttsFromStorage(w http.ResponseWriter, r *http.Request, uid, entryI
 				writeError(w, http.StatusServiceUnavailable, "text-to-speech is not configured")
 				return
 			}
+			log.Printf("tts: synthesize failed: %v", err)
 			writeError(w, http.StatusBadGateway, "text-to-speech failed")
 			return
 		}

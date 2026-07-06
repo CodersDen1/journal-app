@@ -1,27 +1,43 @@
 {
   "expo": {
-    "name": "Still",
+    "name": "Still Journal",
     "slug": "still",
     "version": "1.0.0",
     "orientation": "portrait",
     "scheme": "still",
     "userInterfaceStyle": "light",
     "backgroundColor": "#F6F1E8",
-    "assetBundlePatterns": ["**/*"],
+    "icon": "./assets/icon.png",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.still.journal",
-      "googleServicesFile": "./GoogleService-Info.plist"
+      "googleServicesFile": "./GoogleService-Info.plist",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        }
+      }
     },
     "android": {
       "package": "com.still.journal",
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#F6F1E8"
-      }
+      },
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+      ]
     },
     "web": {
-      "bundler": "metro"
+      "bundler": "metro",
+      "favicon": "./assets/icon.png"
     },
     "plugins": [
       "expo-font",
@@ -41,6 +57,8 @@
       [
         "expo-splash-screen",
         {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 180,
           "backgroundColor": "#F6F1E8",
           "resizeMode": "contain"
         }
@@ -54,9 +72,18 @@
         {
           "ios": {
             "useFrameworks": "static"
+          },
+          "android": {
+            "usesCleartextTraffic": true
           }
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "7f253004-52a8-4759-bb38-e478a52472e2"
+      }
+    },
+    "owner": "cerusapps"
   }
 }
