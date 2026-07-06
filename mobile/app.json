@@ -1,0 +1,62 @@
+{
+  "expo": {
+    "name": "Still",
+    "slug": "still",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "still",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#F6F1E8",
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.still.journal",
+      "googleServicesFile": "./GoogleService-Info.plist"
+    },
+    "android": {
+      "package": "com.still.journal",
+      "googleServicesFile": "./google-services.json",
+      "adaptiveIcon": {
+        "backgroundColor": "#F6F1E8"
+      }
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-font",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Still uses your photos so you can attach them to a journal entry."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Still uses your microphone to record voice journal entries."
+        }
+      ],
+      "expo-status-bar",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#F6F1E8",
+          "resizeMode": "contain"
+        }
+      ],
+      "expo-asset",
+      "@react-native-firebase/app",
+      "@react-native-firebase/auth",
+      "@react-native-google-signin/google-signin",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "useFrameworks": "static"
+          }
+        }
+      ]
+    ]
+  }
+}

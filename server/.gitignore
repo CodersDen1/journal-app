@@ -1,0 +1,18 @@
+# Compiled binaries
+/server
+/bin/
+*.out
+*.exe
+service-account.json
+# Test / coverage
+*.test
+coverage.out
+
+# macOS
+.DS_Store
+
+# Secrets — Firebase service-account keys, local env files
+service-account*.json
+*serviceAccount*.json
+.env
+.env.*
