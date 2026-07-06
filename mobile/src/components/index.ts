@@ -1,4 +1,6 @@
 export { AppShell } from './AppShell';
+export { AnimatedSplash } from './AnimatedSplash';
+export { BrandMark, CLAUDE_CLAY } from './BrandMark';
 export { ScreenHeader } from './ScreenHeader';
 export { JournalCard } from './JournalCard';
 export { PrimaryButton } from './PrimaryButton';

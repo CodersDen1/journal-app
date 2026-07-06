@@ -14,8 +14,6 @@ export type RootStackParamList = {
   Search: undefined;
   Profile: undefined;
   ReminderRhythm: undefined;
-  SoftAccountPrompt: undefined;
-  Login: undefined;
   Paywall: undefined;
 };
 

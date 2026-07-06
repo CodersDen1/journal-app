@@ -45,28 +45,12 @@ export function ProfileScreen() {
     <AppShell scroll header={<ScreenHeader title="Profile" onBack={navigation.goBack} />}>
       <SectionLabel>Account</SectionLabel>
       <Group>
-        {signedIn ? (
-          <>
-            <SettingRow
-              label="Account"
-              value={profile.accountEmail ?? undefined}
-              icon="person-circle-outline"
-            />
-            <SettingRow
-              label="Plan"
-              value={profile.plan === 'plus' ? 'Still Plus' : 'Free'}
-              last
-            />
-          </>
-        ) : (
-          <SettingRow
-            label="Sign in"
-            description="Back up and sync your journal"
-            icon="person-circle-outline"
-            onPress={() => navigation.navigate('Login')}
-            last
-          />
-        )}
+        <SettingRow
+          label="Account"
+          value={profile.accountEmail ?? undefined}
+          icon="person-circle-outline"
+        />
+        <SettingRow label="Plan" value={profile.plan === 'plus' ? 'Still Plus' : 'Free'} last />
       </Group>
 
       {profile.plan === 'free' ? (

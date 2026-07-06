@@ -3,12 +3,10 @@ import React from 'react';
 
 import { CreateJournalScreen } from '../screens/CreateJournalScreen';
 import { JournalDetailScreen } from '../screens/JournalDetailScreen';
-import { LoginScreen } from '../screens/LoginScreen';
 import { PaywallScreen } from '../screens/PaywallScreen';
 import { ProfileScreen } from '../screens/ProfileScreen';
 import { ReminderRhythmScreen } from '../screens/ReminderRhythmScreen';
 import { SearchScreen } from '../screens/SearchScreen';
-import { SoftAccountPromptScreen } from '../screens/SoftAccountPromptScreen';
 import { BottomTabs } from './BottomTabs';
 import type { RootStackParamList } from './types';
 
@@ -27,12 +25,7 @@ export function RootNavigator() {
       <Stack.Group screenOptions={{ presentation: 'modal' }}>
         <Stack.Screen name="CreateJournal" component={CreateJournalScreen} />
         <Stack.Screen name="Search" component={SearchScreen} />
-        <Stack.Screen name="Login" component={LoginScreen} />
         <Stack.Screen name="Paywall" component={PaywallScreen} />
-      </Stack.Group>
-
-      <Stack.Group screenOptions={{ presentation: 'transparentModal', animation: 'fade' }}>
-        <Stack.Screen name="SoftAccountPrompt" component={SoftAccountPromptScreen} />
       </Stack.Group>
     </Stack.Navigator>
   );

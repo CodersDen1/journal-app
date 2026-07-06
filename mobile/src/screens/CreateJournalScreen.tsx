@@ -31,7 +31,6 @@ import type { RootStackParamList } from '../navigation/types';
 import { useAppNavigation } from '../navigation/useAppNavigation';
 import { useAuth } from '../state/AuthContext';
 import { useJournals } from '../state/JournalsContext';
-import { useProfile } from '../state/ProfileContext';
 import { colors, radius, spacing, type } from '../theme';
 
 type Mode = 'text' | 'voice';
@@ -46,7 +45,6 @@ export function CreateJournalScreen() {
   const insets = useSafeAreaInsets();
   const route = useRoute<RouteProp<RootStackParamList, 'CreateJournal'>>();
   const { getEntry, createEntry, updateEntry } = useJournals();
-  const { profile } = useProfile();
   const { user } = useAuth();
 
   const entryId = route.params?.entryId;
@@ -202,7 +200,6 @@ export function CreateJournalScreen() {
       }
     }
     navigation.goBack();
-    if (!existing && profile.accountEmail === null) navigation.navigate('SoftAccountPrompt');
   };
 
   // ---- footer ----
