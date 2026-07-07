@@ -69,9 +69,13 @@ export function subscribeToAuth(callback: (user: FirebaseUserLike | null) => voi
   );
 }
 
-/** Fresh Firebase ID token for the signed-in user, or null. */
-export async function fetchIdToken(): Promise<string | null> {
+/**
+ * Firebase ID token for the signed-in user, or null.
+ * Pass forceRefresh to mint a new token (used to recover from a 401 on a stale
+ * or expired token).
+ */
+export async function fetchIdToken(forceRefresh = false): Promise<string | null> {
   const user = getAuth().currentUser;
   if (!user) return null;
-  return getIdTokenModular(user);
+  return getIdTokenModular(user, forceRefresh);
 }

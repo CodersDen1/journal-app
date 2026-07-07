@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -15,18 +16,46 @@ import (
 // maxAudioBytes caps the size of an uploaded audio file (~20MB).
 const maxAudioBytes = 20 << 20
 
+// Entitler resolves a user's subscription entitlement. It is satisfied by
+// *entitlements.Service; the interface keeps the dependency explicit and lets
+// tests substitute a fake.
+type Entitler interface {
+	IsEntitled(ctx context.Context, uid string) (bool, error)
+	Get(ctx context.Context, uid string) (model.Entitlement, error)
+	Refresh(ctx context.Context, uid string) (model.Entitlement, error)
+	Invalidate(uid string)
+}
+
 // API holds the dependencies shared by the HTTP handlers.
 type API struct {
 	store    store.Store
 	gemini   *gemini.Client
 	ttsCache *ttsCache
 	blobs    *blob.Store // Cloud Storage; nil when storage is disabled.
+	ent      Entitler
+	// webhookAuth is the expected value of the RevenueCat webhook's Authorization
+	// header. Empty disables the webhook (returns 503).
+	webhookAuth string
+	// entitlementID is the RevenueCat entitlement identifier this app gates on.
+	entitlementID string
 }
 
-// New returns an API bound to the given store, Gemini client and (optional)
-// blob store. A nil blobs disables Storage-backed persistence.
-func New(s store.Store, g *gemini.Client, blobs *blob.Store) *API {
-	return &API{store: s, gemini: g, ttsCache: newTTSCache(ttsCacheCap), blobs: blobs}
+// New returns an API bound to the given store, Gemini client, (optional) blob
+// store, entitlement resolver, RevenueCat webhook secret, and entitlement id. A
+// nil blobs disables Storage-backed persistence.
+func New(s store.Store, g *gemini.Client, blobs *blob.Store, ent Entitler, webhookAuth, entitlementID string) *API {
+	if entitlementID == "" {
+		entitlementID = "pro"
+	}
+	return &API{
+		store:         s,
+		gemini:        g,
+		ttsCache:      newTTSCache(ttsCacheCap),
+		blobs:         blobs,
+		ent:           ent,
+		webhookAuth:   webhookAuth,
+		entitlementID: entitlementID,
+	}
 }
 
 // writeJSON writes v as a JSON response with the given status code.
@@ -76,6 +105,73 @@ func (a *API) me(w http.ResponseWriter, r *http.Request) {
 		"uid":   uid,
 		"email": auth.EmailFromContext(r.Context()),
 	})
+}
+
+// --- entitlement / paywall gate ---
+
+// requireEntitlement wraps a handler so it runs only when the authenticated user
+// has an active subscription entitlement. Otherwise it writes 402 Payment
+// Required. This is the server-side gate — the client cannot bypass it.
+func (a *API) requireEntitlement(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, ok := a.uid(w, r)
+		if !ok {
+			return
+		}
+		entitled, err := a.ent.IsEntitled(r.Context(), uid)
+		if err != nil {
+			// Fail closed: an error resolving entitlement denies access.
+			writeError(w, http.StatusPaymentRequired, "subscription_required")
+			return
+		}
+		if !entitled {
+			writeJSON(w, http.StatusPaymentRequired, map[string]any{
+				"error":    "subscription_required",
+				"entitled": false,
+			})
+			return
+		}
+		next(w, r)
+	}
+}
+
+// getEntitlement returns the authoritative entitlement for the current user.
+// The client uses it to decide whether to show the app or the paywall.
+func (a *API) getEntitlement(w http.ResponseWriter, r *http.Request) {
+	uid, ok := a.uid(w, r)
+	if !ok {
+		return
+	}
+	ent, err := a.ent.Get(r.Context(), uid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve entitlement")
+		return
+	}
+	writeJSON(w, http.StatusOK, ent)
+}
+
+// refreshEntitlement forces a re-check against RevenueCat and returns the fresh
+// entitlement. The client calls this immediately after a purchase or restore.
+func (a *API) refreshEntitlement(w http.ResponseWriter, r *http.Request) {
+	uid, ok := a.uid(w, r)
+	if !ok {
+		return
+	}
+	ent, err := a.ent.Refresh(r.Context(), uid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to refresh entitlement")
+		return
+	}
+	writeJSON(w, http.StatusOK, ent)
+}
+
+// planForEntitlement maps an entitlement to the profile's display plan string.
+func planForEntitlement(ctx context.Context, ent Entitler, uid string) string {
+	e, err := ent.Get(ctx, uid)
+	if err == nil && e.Active {
+		return "pro"
+	}
+	return "free"
 }
 
 // --- journals ---
@@ -264,6 +360,9 @@ func (a *API) getProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load profile")
 		return
 	}
+	// Plan is server-authoritative: it always reflects the resolved entitlement,
+	// never whatever the client last stored.
+	p.Plan = planForEntitlement(r.Context(), a.ent, uid)
 	writeJSON(w, http.StatusOK, p)
 }
 
@@ -277,6 +376,8 @@ func (a *API) updateProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	// Never trust a client-supplied plan; it is derived from the entitlement.
+	p.Plan = planForEntitlement(r.Context(), a.ent, uid)
 	updated, err := a.store.UpdateProfile(r.Context(), uid, p)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update profile")

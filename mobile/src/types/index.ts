@@ -41,8 +41,26 @@ export interface InsightDigest {
   relatedEntryIds: string[];
 }
 
-export type Plan = 'free' | 'plus';
+export type Plan = 'free' | 'pro';
 export type EntryMode = 'text' | 'voice';
+
+/**
+ * Subscription entitlement resolved by the backend from RevenueCat. This is the
+ * authoritative access signal — mirrors the server's model.Entitlement.
+ */
+export interface Entitlement {
+  /** Whether the user currently has active "pro" access (including a free trial). */
+  active: boolean;
+  productId: string;
+  store: string;
+  periodType: string;
+  /** ISO-8601 expiry, or "" when unknown/non-expiring. */
+  expiresAt: string;
+  willRenew: boolean;
+  isTrial: boolean;
+  updatedAt: string;
+  source: string;
+}
 export type ReminderRhythm = 'off' | 'daily' | 'weekdays' | 'weekends' | 'custom';
 
 export interface ProfileSettings {

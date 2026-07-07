@@ -15,6 +15,7 @@ import {
   Alert,
   Image,
   Pressable,
+  ScrollView,
   StyleSheet,
   Switch,
   Text,
@@ -49,21 +50,31 @@ export function CreateJournalScreen() {
 
   const entryId = route.params?.entryId;
   const existing = entryId ? getEntry(entryId) : undefined;
+  // A clip handed in from the home screen's hold-to-record button.
+  const handoffUri = existing ? undefined : route.params?.audioUri;
 
   const [mode, setMode] = useState<Mode>(existing?.type ?? route.params?.mode ?? 'text');
   const [text, setText] = useState(existing?.text ?? '');
   const [photos, setPhotos] = useState<string[]>(existing?.photos ?? []);
 
   // Voice state
-  const [phase, setPhase] = useState<Phase>(existing?.type === 'voice' ? 'recorded' : 'idle');
-  const [audioUri, setAudioUri] = useState<string | null>(existing?.audioUri ?? null);
-  const [finalDuration, setFinalDuration] = useState(existing?.audioDuration ?? 0);
+  const [phase, setPhase] = useState<Phase>(
+    existing?.type === 'voice' || handoffUri ? 'recorded' : 'idle',
+  );
+  const [audioUri, setAudioUri] = useState<string | null>(existing?.audioUri ?? handoffUri ?? null);
+  const [finalDuration, setFinalDuration] = useState(
+    existing?.audioDuration ?? route.params?.audioDuration ?? 0,
+  );
   const [transcript, setTranscript] = useState(existing?.transcript ?? '');
   const [transcribeEnabled, setTranscribeEnabled] = useState(true);
   const [status, setStatus] = useState<TranscriptStatus>(existing?.transcript ? 'done' : 'idle');
-  const [showTranscript, setShowTranscript] = useState(false);
+  // Show an existing transcript by default (don't hide it behind "Read text").
+  const [showTranscript, setShowTranscript] = useState(Boolean(existing?.transcript));
   const [errorText, setErrorText] = useState('');
-  const attemptedUri = useRef<string | null>(null);
+  // Mark an already-transcribed recording as attempted so opening the entry for
+  // editing never re-transcribes it.
+  const attemptedUri = useRef<string | null>(existing?.transcript ? existing.audioUri ?? null : null);
+  const scrollRef = useRef<ScrollView>(null);
 
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(recorder, 250);
@@ -88,6 +99,7 @@ export function CreateJournalScreen() {
       const result = await api.transcribe(uri);
       setTranscript(result);
       setStatus('done');
+      setShowTranscript(true); // reveal the transcript as soon as it's ready
     } catch (err) {
       const message = err instanceof Error ? err.message : '';
       console.warn('[transcribe] failed:', message);
@@ -240,6 +252,11 @@ export function CreateJournalScreen() {
   // content clear of the home indicator / Android nav bar.
   const bodyPad = footer ? null : { paddingBottom: Math.max(insets.bottom, spacing.md) };
 
+  // The recorded-voice view holds the transcript input low on the screen, so it
+  // scrolls to keep the field above the keyboard. The full-height text editor
+  // and the (input-less) recording UI stay fixed.
+  const scroll = mode === 'voice' && phase === 'recorded';
+
   const header = (
     <ScreenHeader
       title={existing ? 'Edit journal' : 'New Journal'}
@@ -249,7 +266,7 @@ export function CreateJournalScreen() {
   );
 
   return (
-    <AppShell header={header} footer={footer}>
+    <AppShell header={header} footer={footer} scroll={scroll} scrollRef={scrollRef}>
       <View style={styles.segment}>
         <SegmentedControl
           options={[
@@ -282,7 +299,7 @@ export function CreateJournalScreen() {
           />
         </View>
       ) : (
-        <View style={[styles.body, bodyPad]}>
+        <View style={[phase === 'recorded' ? undefined : styles.body, bodyPad]}>
           {phase !== 'recorded' ? (
             <>
               <View style={styles.voiceCenter}>
@@ -320,7 +337,7 @@ export function CreateJournalScreen() {
             </>
           ) : (
             <>
-              <View style={styles.voiceCenter}>
+              <View style={styles.recordedHead}>
                 <Text style={styles.timer}>{formatDuration(finalDuration)}</Text>
                 <Text style={[type.label, styles.completeText]}>Recording complete</Text>
                 <View style={styles.wave}>
@@ -358,6 +375,9 @@ export function CreateJournalScreen() {
                     value={transcript}
                     onChangeText={setTranscript}
                     multiline
+                    onFocus={() =>
+                      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 250)
+                    }
                     placeholder="Add or edit the transcript"
                     placeholderTextColor={colors.mutedText}
                     style={[type.body, styles.transcriptInput]}
@@ -464,6 +484,8 @@ const styles = StyleSheet.create({
 
   // Voice mode
   voiceCenter: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  // Recorded view is scrollable, so its head is top-aligned instead of centered.
+  recordedHead: { alignItems: 'center', paddingTop: spacing.lg, paddingBottom: spacing.md },
   timer: { ...type.title, fontSize: 44, lineHeight: 50, color: colors.text },
   voiceHint: { marginTop: spacing.xs },
   micWrap: {

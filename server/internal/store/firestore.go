@@ -41,6 +41,13 @@ func (s *FirestoreStore) insightDoc(uid, period string) *firestore.DocumentRef {
 	return s.userDoc(uid).Collection("insights").Doc(period)
 }
 
+// entitlementDoc points at the user's subscription entitlement. It lives in its
+// own subcollection doc — never in the profile doc — so client profile writes
+// cannot grant access.
+func (s *FirestoreStore) entitlementDoc(uid string) *firestore.DocumentRef {
+	return s.userDoc(uid).Collection("billing").Doc("entitlement")
+}
+
 func isNotFound(err error) bool {
 	return status.Code(err) == codes.NotFound
 }
@@ -238,6 +245,31 @@ func (s *FirestoreStore) UpdateProfile(ctx context.Context, uid string, p model.
 		return model.ProfileSettings{}, fmt.Errorf("firestore: update profile: %w", err)
 	}
 	return p, nil
+}
+
+// Entitlement reads the user's recorded entitlement. Returns (…, false, nil)
+// when nothing has been recorded yet.
+func (s *FirestoreStore) Entitlement(ctx context.Context, uid string) (model.Entitlement, bool, error) {
+	snap, err := s.entitlementDoc(uid).Get(ctx)
+	if isNotFound(err) {
+		return defaultEntitlement(), false, nil
+	}
+	if err != nil {
+		return model.Entitlement{}, false, fmt.Errorf("firestore: get entitlement: %w", err)
+	}
+	var e model.Entitlement
+	if err := snap.DataTo(&e); err != nil {
+		return model.Entitlement{}, false, fmt.Errorf("firestore: decode entitlement: %w", err)
+	}
+	return e, true, nil
+}
+
+// SaveEntitlement writes the user's entitlement to users/{uid}/billing/entitlement.
+func (s *FirestoreStore) SaveEntitlement(ctx context.Context, uid string, e model.Entitlement) error {
+	if _, err := s.entitlementDoc(uid).Set(ctx, e); err != nil {
+		return fmt.Errorf("firestore: save entitlement: %w", err)
+	}
+	return nil
 }
 
 // Close closes the underlying Firestore client.

@@ -1,4 +1,4 @@
-import type { InsightDigest, InsightPeriod, JournalEntry, ProfileSettings } from '../types';
+import type { Entitlement, InsightDigest, InsightPeriod, JournalEntry, ProfileSettings } from '../types';
 
 /**
  * Client for the Still backend (Go + Firestore + Gemini).
@@ -9,23 +9,53 @@ import type { InsightDigest, InsightPeriod, JournalEntry, ProfileSettings } from
  */
 const BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8080';
 
-let tokenGetter: (() => Promise<string | null>) | null = null;
+let tokenGetter: ((forceRefresh?: boolean) => Promise<string | null>) | null = null;
 
 /** Wire the Firebase ID-token source (called once by AuthContext). */
-export function setAuthTokenGetter(getter: () => Promise<string | null>): void {
+export function setAuthTokenGetter(getter: (forceRefresh?: boolean) => Promise<string | null>): void {
   tokenGetter = getter;
 }
 
-async function authHeaders(): Promise<Record<string, string>> {
-  const token = tokenGetter ? await tokenGetter() : null;
+async function authHeaders(forceRefresh = false): Promise<Record<string, string>> {
+  const token = tokenGetter ? await tokenGetter(forceRefresh) : null;
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+/**
+ * Error thrown for non-2xx responses. `status` lets callers special-case the
+ * paywall (402 subscription_required) versus other failures.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(status: number, path: string) {
+    super(`API ${status} on ${path}`);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+/** True when the error is a 402 (server-enforced paywall). */
+export function isPaymentRequired(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 402;
+}
+
+async function send(path: string, init: RequestInit | undefined, forceRefresh: boolean): Promise<Response> {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(await authHeaders(forceRefresh)),
+    ...(init?.headers ?? {}),
+  };
+  return fetch(`${BASE_URL}${path}`, { ...init, headers });
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = { 'Content-Type': 'application/json', ...(await authHeaders()), ...(init?.headers ?? {}) };
-  const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
+  let res = await send(path, init, false);
+  // A 401 usually means a stale/expired ID token — mint a fresh one and retry once.
+  if (res.status === 401 && tokenGetter) {
+    res = await send(path, init, true);
+  }
   if (!res.ok) {
-    throw new Error(`API ${res.status} on ${path}`);
+    throw new ApiError(res.status, path);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -70,6 +100,16 @@ export const api = {
 
   async me(): Promise<{ uid: string; email: string | null }> {
     return request('/api/me');
+  },
+
+  /** Authoritative subscription entitlement for the signed-in user. */
+  async entitlement(): Promise<Entitlement> {
+    return request('/api/entitlement');
+  },
+
+  /** Force the server to re-verify entitlement with RevenueCat (after purchase/restore). */
+  async refreshEntitlement(): Promise<Entitlement> {
+    return request('/api/entitlement/refresh', { method: 'POST' });
   },
 
   async listEntries(): Promise<JournalEntry[]> {

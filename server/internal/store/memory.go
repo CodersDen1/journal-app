@@ -12,9 +12,11 @@ import (
 
 // userData holds one user's in-memory state.
 type userData struct {
-	entries  map[string]model.JournalEntry
-	insights map[string]model.InsightDigest // keyed by periodType
-	profile  model.ProfileSettings
+	entries     map[string]model.JournalEntry
+	insights    map[string]model.InsightDigest // keyed by periodType
+	profile     model.ProfileSettings
+	entitlement model.Entitlement
+	hasEnt      bool // whether entitlement has ever been recorded
 }
 
 // MemoryStore is a thread-safe, in-process Store. It is intended for local
@@ -206,6 +208,29 @@ func (s *MemoryStore) UpdateProfile(_ context.Context, uid string, p model.Profi
 	u := s.getOrSeed(uid)
 	u.profile = p
 	return u.profile, nil
+}
+
+// Entitlement returns the user's recorded entitlement, if any.
+func (s *MemoryStore) Entitlement(_ context.Context, uid string) (model.Entitlement, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	u, ok := s.users[uid]
+	if !ok || !u.hasEnt {
+		return defaultEntitlement(), false, nil
+	}
+	return u.entitlement, true, nil
+}
+
+// SaveEntitlement records the user's entitlement.
+func (s *MemoryStore) SaveEntitlement(_ context.Context, uid string, e model.Entitlement) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	u := s.getOrSeed(uid)
+	u.entitlement = e
+	u.hasEnt = true
+	return nil
 }
 
 // Close is a no-op for the in-memory store.

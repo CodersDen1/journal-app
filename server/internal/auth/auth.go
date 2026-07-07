@@ -22,6 +22,7 @@ type contextKey int
 const (
 	uidKey contextKey = iota
 	emailKey
+	emailVerifiedKey
 )
 
 // Verifier is the subset of *auth.Client the middleware needs. It lets tests
@@ -61,6 +62,9 @@ func Middleware(verifier Verifier, mode string) func(http.Handler) http.Handler 
 			if email := claimString(tok.Claims, "email"); email != "" {
 				ctx = context.WithValue(ctx, emailKey, email)
 			}
+			if verified, ok := tok.Claims["email_verified"].(bool); ok && verified {
+				ctx = context.WithValue(ctx, emailVerifiedKey, true)
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -79,6 +83,13 @@ func UIDFromContext(ctx context.Context) (string, bool) {
 func EmailFromContext(ctx context.Context) string {
 	email, _ := ctx.Value(emailKey).(string)
 	return email
+}
+
+// EmailVerifiedFromContext reports whether the token's email_verified claim was
+// true. Used to gate the internal-domain paywall bypass.
+func EmailVerifiedFromContext(ctx context.Context) bool {
+	v, _ := ctx.Value(emailVerifiedKey).(bool)
+	return v
 }
 
 func bearerToken(header string) string {

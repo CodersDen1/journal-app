@@ -9,12 +9,15 @@ export type TabParamList = {
 
 export type RootStackParamList = {
   Tabs: NavigatorScreenParams<TabParamList> | undefined;
-  CreateJournal: { entryId?: string; mode?: 'text' | 'voice' } | undefined;
+  CreateJournal:
+    | { entryId?: string; mode?: 'text' | 'voice'; audioUri?: string; audioDuration?: number }
+    | undefined;
   JournalDetail: { entryId: string };
   Search: undefined;
   Profile: undefined;
   ReminderRhythm: undefined;
-  Paywall: undefined;
+  /** Hour-by-hour timeline for a single day (defaults to today). */
+  DayTimeline: { date?: string } | undefined;
 };
 
 export type RootNavigation = NativeStackNavigationProp<RootStackParamList>;

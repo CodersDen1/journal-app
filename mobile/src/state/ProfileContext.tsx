@@ -11,8 +11,6 @@ interface ProfileContextValue {
   profile: ProfileSettings;
   /** Shallow-merge a change into settings; persists locally and to the backend when signed in. */
   update: (patch: Partial<ProfileSettings>) => void;
-  /** Flip the plan to Plus (called by the paywall). */
-  upgradeToPlus: () => void;
 }
 
 const ProfileContext = createContext<ProfileContextValue | undefined>(undefined);
@@ -66,11 +64,9 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
     [user],
   );
 
-  const upgradeToPlus = useCallback(() => update({ plan: 'plus' }), [update]);
-
   const value = useMemo<ProfileContextValue>(
-    () => ({ loading, profile, update, upgradeToPlus }),
-    [loading, profile, update, upgradeToPlus],
+    () => ({ loading, profile, update }),
+    [loading, profile, update],
   );
 
   return <ProfileContext.Provider value={value}>{children}</ProfileContext.Provider>;

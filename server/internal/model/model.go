@@ -34,6 +34,23 @@ type InsightDigest struct {
 	RelatedEntryIds []string `json:"relatedEntryIds" firestore:"relatedEntryIds"`
 }
 
+// Entitlement is the user's resolved subscription access, derived from
+// RevenueCat. It is the server's source of truth for gating and is written only
+// by the RevenueCat webhook and server-side REST verification — never by the
+// client. It is stored separately from ProfileSettings so a profile write can
+// never grant access.
+type Entitlement struct {
+	Active     bool   `json:"active" firestore:"active"`         // any active "pro" access, including a free trial
+	ProductID  string `json:"productId" firestore:"productId"`   // e.g. "still_pro_monthly"
+	Store      string `json:"store" firestore:"store"`           // "app_store" | "play_store" | ""
+	PeriodType string `json:"periodType" firestore:"periodType"` // "trial" | "intro" | "normal" | ""
+	ExpiresAt  string `json:"expiresAt" firestore:"expiresAt"`   // RFC3339, or "" when unknown/non-expiring
+	WillRenew  bool   `json:"willRenew" firestore:"willRenew"`
+	IsTrial    bool   `json:"isTrial" firestore:"isTrial"`
+	UpdatedAt  string `json:"updatedAt" firestore:"updatedAt"` // RFC3339 of the last resolution
+	Source     string `json:"source" firestore:"source"`       // "webhook" | "api" | "none"
+}
+
 // ProfileSettings holds the user's account and app preferences.
 type ProfileSettings struct {
 	AccountEmail          *string `json:"accountEmail" firestore:"accountEmail"` // nullable

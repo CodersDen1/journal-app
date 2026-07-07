@@ -1,13 +1,14 @@
-import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
-import { Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { Alert, Linking, Platform, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { AppShell, ScreenHeader, SettingRow } from '../components';
+import { formatFullDate } from '../lib/format';
 import { useAppNavigation } from '../navigation/useAppNavigation';
 import { useAuth } from '../state/AuthContext';
+import { useEntitlement } from '../state/EntitlementContext';
 import { useProfile } from '../state/ProfileContext';
 import { colors, radius, spacing, type } from '../theme';
-import type { ReminderRhythm } from '../types';
+import type { Entitlement, ReminderRhythm } from '../types';
 
 function reminderRhythmLabel(rhythm: ReminderRhythm): string {
   switch (rhythm) {
@@ -34,12 +35,45 @@ function SectionLabel({ children }: { children: string }) {
   return <Text style={[type.overline, styles.sectionLabel]}>{children}</Text>;
 }
 
+/** A "Renews on …" style status line derived from the entitlement. */
+function subscriptionDetail(ent: Entitlement | null): { label: string; value: string } | null {
+  if (!ent || !ent.active) return null;
+  const date = ent.expiresAt ? formatFullDate(ent.expiresAt) : '';
+  if (ent.isTrial) return { label: 'Free trial ends', value: date };
+  if (ent.willRenew) return { label: 'Renews', value: date };
+  if (date) return { label: 'Expires', value: date };
+  return null;
+}
+
 export function ProfileScreen() {
   const navigation = useAppNavigation();
   const { profile, update } = useProfile();
   const { user, signOut } = useAuth();
+  const { entitlement, restore } = useEntitlement();
 
   const signedIn = Boolean(user);
+  const detail = subscriptionDetail(entitlement);
+  const isPro = entitlement?.active || profile.plan === 'pro';
+
+  const onRestore = async () => {
+    try {
+      await restore();
+      Alert.alert('Restore complete', 'Your subscription is up to date.');
+    } catch {
+      Alert.alert('Nothing to restore', "We couldn't find a subscription for this account.");
+    }
+  };
+
+  const onManage = () => {
+    const url = Platform.select({
+      ios: 'https://apps.apple.com/account/subscriptions',
+      android: 'https://play.google.com/store/account/subscriptions',
+      default: 'https://apps.apple.com/account/subscriptions',
+    });
+    Linking.openURL(url).catch(() =>
+      Alert.alert('Could not open', 'Manage your subscription from the App Store or Google Play.'),
+    );
+  };
 
   return (
     <AppShell scroll header={<ScreenHeader title="Profile" onBack={navigation.goBack} />}>
@@ -49,26 +83,17 @@ export function ProfileScreen() {
           label="Account"
           value={profile.accountEmail ?? undefined}
           icon="person-circle-outline"
+          last
         />
-        <SettingRow label="Plan" value={profile.plan === 'plus' ? 'Still Plus' : 'Free'} last />
       </Group>
 
-      {profile.plan === 'free' ? (
-        <Pressable
-          onPress={() => navigation.navigate('Paywall')}
-          accessibilityRole="button"
-          style={({ pressed }) => [styles.upgradeCard, pressed && styles.pressed]}
-        >
-          <Ionicons name="sparkles-outline" size={24} color={colors.primary} />
-          <View style={styles.upgradeText}>
-            <Text style={type.heading}>Still Plus</Text>
-            <Text style={[type.bodyMuted, styles.upgradeSubtitle]}>
-              Deeper insights, backup, and app lock
-            </Text>
-          </View>
-          <Ionicons name="chevron-forward" size={20} color={colors.mutedText} />
-        </Pressable>
-      ) : null}
+      <SectionLabel>Subscription</SectionLabel>
+      <Group>
+        <SettingRow label="Plan" value={isPro ? 'Still Pro' : 'Free'} />
+        {detail ? <SettingRow label={detail.label} value={detail.value} /> : null}
+        <SettingRow label="Restore purchases" onPress={() => void onRestore()} />
+        <SettingRow label="Manage subscription" onPress={onManage} last />
+      </Group>
 
       <SectionLabel>Privacy</SectionLabel>
       <Group>
@@ -151,18 +176,4 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
   },
-  upgradeCard: {
-    marginTop: spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    backgroundColor: colors.surface,
-    borderColor: colors.primary,
-    borderWidth: 1,
-    borderRadius: radius.lg,
-    padding: spacing.lg,
-  },
-  upgradeText: { flex: 1 },
-  upgradeSubtitle: { marginTop: 2 },
-  pressed: { opacity: 0.6 },
 });
