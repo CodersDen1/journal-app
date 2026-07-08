@@ -83,4 +83,6 @@ export interface NewEntryInput {
   audioUri?: string | null;
   audioDuration?: number;
   photos?: string[];
+  /** Override the creation time (e.g. an hour tapped on the day timeline). */
+  createdAt?: string;
 }

@@ -19,9 +19,7 @@ function sameDay(a: Date, b: Date): boolean {
   );
 }
 
-const clampHour = (h: number) => Math.min(23, Math.max(0, h));
-
-/** "7 AM", "Noon", "12 AM", "1 PM" … */
+/** "12 AM", "7 AM", "Noon", "1 PM" … */
 function hourLabel(h: number): string {
   if (h === 0) return '12 AM';
   if (h === 12) return 'Noon';
@@ -29,63 +27,14 @@ function hourLabel(h: number): string {
   return `${h % 12 || 12} ${period}`;
 }
 
-/** The inclusive hour range to render, padded for breathing room. */
-function hourRange(entryHours: number[], nowHour: number | null): number[] {
-  const marks = [...entryHours];
-  if (nowHour !== null) marks.push(nowHour);
-  if (marks.length === 0) {
-    const base = nowHour ?? 9;
-    const start = clampHour(base - 3);
-    const end = clampHour(base + 3);
-    return range(start, end);
-  }
-  const start = clampHour(Math.min(...marks) - 1);
-  let end = clampHour(Math.max(...marks));
-  // Leave room after "Now" when it's the latest thing on the timeline.
-  const latestEntryHour = entryHours.length ? Math.max(...entryHours) : -1;
-  if (nowHour !== null && nowHour >= latestEntryHour) end = clampHour(nowHour + 2);
-  return range(start, Math.max(end, start));
-}
-
-function range(start: number, end: number): number[] {
-  const out: number[] = [];
-  for (let h = start; h <= end; h += 1) out.push(h);
-  return out;
-}
-
-/** A rendered timeline row: a single hour, or a collapsed run of empty hours. */
-type Segment = { kind: 'hour'; hour: number } | { kind: 'gap'; from: number; to: number };
+/** Every hour of the day, midnight → 11 PM. */
+const HOURS = Array.from({ length: 24 }, (_, h) => h);
 
 /**
- * Collapse consecutive empty hours into gap segments. An hour is kept (rendered
- * on its own) when it has entries or is the current hour; a lone empty hour is
- * also kept, but runs of two or more empty hours become one compact gap.
- */
-function buildSegments(hours: number[], isKept: (h: number) => boolean): Segment[] {
-  const segs: Segment[] = [];
-  let gapStart: number | null = null;
-  const flush = (end: number) => {
-    if (gapStart === null) return;
-    if (end > gapStart) segs.push({ kind: 'gap', from: gapStart, to: end });
-    else segs.push({ kind: 'hour', hour: gapStart }); // single empty hour stays inline
-    gapStart = null;
-  };
-  for (const h of hours) {
-    if (isKept(h)) {
-      flush(h - 1);
-      segs.push({ kind: 'hour', hour: h });
-    } else if (gapStart === null) {
-      gapStart = h;
-    }
-  }
-  flush(hours[hours.length - 1]);
-  return segs;
-}
-
-/**
- * A vertical, hour-by-hour timeline of a single day's entries (today by
- * default). Entries sit at the hour they were created; a green "Now" marker
- * shows the current time. Tapping an entry opens it for editing.
+ * A vertical, hour-by-hour timeline of a single day (today by default). Every
+ * hour of the day is shown; entries sit at the hour they were created and a
+ * green "Now" marker shows the current time. Tapping an hour opens the composer
+ * seeded to that time; tapping an entry opens it for editing.
  */
 export function DayTimelineScreen() {
   const navigation = useAppNavigation();
@@ -93,32 +42,14 @@ export function DayTimelineScreen() {
   const { activeEntries } = useJournals();
 
   const scrollRef = useRef<ScrollView>(null);
-  const nowY = useRef(0);
   const didAutoScroll = useRef(false);
 
   const [dayISO, setDayISO] = useState(route.params?.date ?? new Date().toISOString());
-  const [expandedGaps, setExpandedGaps] = useState<Set<string>>(new Set());
+  const [pickerOpen, setPickerOpen] = useState(false);
   const day = useMemo(() => new Date(dayISO), [dayISO]);
   const now = new Date();
   const isToday = sameDay(day, now);
   const nowHour = isToday ? now.getHours() : null;
-
-  const [pickerOpen, setPickerOpen] = useState(false);
-
-  // On day change reset scroll + collapsed gaps; today re-scrolls to Now via onNowLayout.
-  useEffect(() => {
-    didAutoScroll.current = false;
-    setExpandedGaps(new Set());
-    scrollRef.current?.scrollTo({ y: 0, animated: false });
-  }, [dayISO]);
-
-  const toggleGap = (key: string) =>
-    setExpandedGaps((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
 
   // This day's entries, earliest first (top of the timeline).
   const dayEntries = useMemo(
@@ -138,81 +69,79 @@ export function DayTimelineScreen() {
     return map;
   }, [dayEntries]);
 
-  const hours = useMemo(
-    () => hourRange(dayEntries.map((e) => new Date(e.createdAt).getHours()), nowHour),
-    [dayEntries, nowHour],
-  );
+  // Where to rest the scroll initially: on "Now" today, else the first entry,
+  // else a sensible morning hour so we don't open on empty pre-dawn hours.
+  const firstEntryHour = dayEntries.length ? new Date(dayEntries[0].createdAt).getHours() : null;
+  const focusHour = nowHour ?? firstEntryHour ?? 7;
 
-  const segments = useMemo(
-    () => buildSegments(hours, (h) => (byHour[h]?.length ?? 0) > 0 || h === nowHour),
-    [hours, byHour, nowHour],
-  );
+  // On day change, allow the next focus layout to re-scroll from the top.
+  useEffect(() => {
+    didAutoScroll.current = false;
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, [dayISO]);
 
-  const scrollToNow = () => {
-    scrollRef.current?.scrollTo({ y: Math.max(0, nowY.current - 140), animated: true });
+  // Scroll the focus hour into view once, leaving a little context above it.
+  const onHourLayout = (h: number) => (e: LayoutChangeEvent) => {
+    if (h !== focusHour || didAutoScroll.current) return;
+    didAutoScroll.current = true;
+    const y = e.nativeEvent.layout.y;
+    requestAnimationFrame(() =>
+      scrollRef.current?.scrollTo({ y: Math.max(0, y - 120), animated: true }),
+    );
   };
 
-  const onNowLayout = (e: LayoutChangeEvent) => {
-    nowY.current = e.nativeEvent.layout.y;
-    if (!didAutoScroll.current) {
-      didAutoScroll.current = true;
-      requestAnimationFrame(scrollToNow);
-    }
+  // Tapping an hour opens the composer seeded to that time, so the new entry
+  // lands in this slot. The current hour keeps the real minutes; other hours
+  // start on the hour.
+  const createAt = (h: number) => {
+    const at = new Date(day);
+    at.setHours(h, isToday && h === now.getHours() ? now.getMinutes() : 0, 0, 0);
+    navigation.navigate('CreateJournal', { at: at.toISOString(), mode: 'text' });
   };
 
-  const renderHour = (h: number) => (
-    <React.Fragment key={`h-${h}`}>
-      <View style={styles.hourRow}>
-        <Text style={styles.hourLabel}>{hourLabel(h)}</Text>
-        <View style={styles.hourContent}>
-          <View style={styles.gridline} />
-          <View style={styles.hourEntries}>
-            {(byHour[h] ?? []).map((entry) => (
-              <TimelineEntryCard
-                key={entry.id}
-                entry={entry}
-                onPress={() => navigation.navigate('CreateJournal', { entryId: entry.id })}
-              />
-            ))}
-          </View>
-        </View>
-      </View>
-
-      {nowHour === h ? (
-        <View style={styles.nowRow} onLayout={onNowLayout}>
-          <Text style={styles.nowLabel}>Now</Text>
-          <View style={styles.nowContent}>
-            <View style={styles.nowDot} />
-            <View style={styles.nowLine} />
-          </View>
-        </View>
-      ) : null}
-    </React.Fragment>
-  );
-
-  const renderGap = (from: number, to: number) => {
-    const key = `${from}-${to}`;
-    if (expandedGaps.has(key)) return range(from, to).map(renderHour);
-    const span = to - from + 1;
+  const renderHour = (h: number) => {
+    const items = byHour[h] ?? [];
     return (
-      <Pressable
-        key={`g-${key}`}
-        onPress={() => toggleGap(key)}
-        accessibilityRole="button"
-        accessibilityLabel={`Show ${span} quiet hours, ${hourLabel(from)} to ${hourLabel(to)}`}
-        style={({ pressed }) => [styles.gapRow, pressed && styles.gapPressed]}
-      >
-        <View style={styles.gapGutter} />
-        <View style={styles.hourContent}>
-          <View style={styles.gridline} />
-          <View style={styles.gapInner}>
-            <Text style={styles.gapLabel}>
-              {hourLabel(from)} – {hourLabel(to)}
-            </Text>
-            <Ionicons name="chevron-down" size={14} color={colors.mutedText} />
+      <React.Fragment key={`h-${h}`}>
+        <Pressable
+          onPress={() => createAt(h)}
+          onLayout={onHourLayout(h)}
+          accessibilityRole="button"
+          accessibilityLabel={`Add an entry at ${hourLabel(h)}`}
+          style={({ pressed }) => [styles.hourRow, pressed && styles.hourPressed]}
+        >
+          <Text style={styles.hourLabel}>{hourLabel(h)}</Text>
+          <View style={styles.hourContent}>
+            <View style={styles.gridline} />
+            {items.length > 0 ? (
+              <View style={styles.hourEntries}>
+                {items.map((entry) => (
+                  <TimelineEntryCard
+                    key={entry.id}
+                    entry={entry}
+                    onPress={() => navigation.navigate('CreateJournal', { entryId: entry.id })}
+                  />
+                ))}
+              </View>
+            ) : (
+              <View style={styles.addHint}>
+                <Ionicons name="add-circle-outline" size={16} color={colors.mutedText} />
+                <Text style={styles.addHintText}>Add note</Text>
+              </View>
+            )}
           </View>
-        </View>
-      </Pressable>
+        </Pressable>
+
+        {nowHour === h ? (
+          <View style={styles.nowRow}>
+            <Text style={styles.nowLabel}>Now</Text>
+            <View style={styles.nowContent}>
+              <View style={styles.nowDot} />
+              <View style={styles.nowLine} />
+            </View>
+          </View>
+        ) : null}
+      </React.Fragment>
     );
   };
 
@@ -241,13 +170,11 @@ export function DayTimelineScreen() {
       >
         {dayEntries.length === 0 ? (
           <Text style={[type.bodyMuted, styles.emptyHint]}>
-            No entries for this day yet.
+            No entries for this day yet. Tap any hour to add one.
           </Text>
         ) : null}
 
-        {segments.map((seg) =>
-          seg.kind === 'hour' ? renderHour(seg.hour) : renderGap(seg.from, seg.to),
-        )}
+        {HOURS.map(renderHour)}
       </ScrollView>
 
       <CalendarSheet
@@ -282,6 +209,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     minHeight: 64,
   },
+  hourPressed: { opacity: 0.55 },
   hourLabel: {
     ...type.caption,
     width: GUTTER,
@@ -303,20 +231,14 @@ const styles = StyleSheet.create({
     paddingTop: spacing.lg,
     gap: spacing.md,
   },
-  gapRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    minHeight: 40,
-  },
-  gapPressed: { opacity: 0.6 },
-  gapGutter: { width: GUTTER },
-  gapInner: {
+  addHint: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
     paddingTop: spacing.md,
+    opacity: 0.5,
   },
-  gapLabel: { ...type.caption, color: colors.mutedText },
+  addHintText: { ...type.caption, color: colors.mutedText },
   nowRow: {
     flexDirection: 'row',
     alignItems: 'center',

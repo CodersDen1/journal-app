@@ -88,7 +88,7 @@ export function JournalsProvider({ children }: { children: React.ReactNode }) {
       const now = new Date().toISOString();
       const entry: JournalEntry = {
         id: createId(),
-        createdAt: now,
+        createdAt: input.createdAt ?? now,
         updatedAt: now,
         type: input.type,
         text: input.text ?? '',

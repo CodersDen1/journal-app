@@ -52,6 +52,8 @@ export function CreateJournalScreen() {
   const existing = entryId ? getEntry(entryId) : undefined;
   // A clip handed in from the home screen's hold-to-record button.
   const handoffUri = existing ? undefined : route.params?.audioUri;
+  // Seed time for a brand-new entry — e.g. an hour tapped on the day timeline.
+  const seedAt = existing ? undefined : route.params?.at;
 
   const [mode, setMode] = useState<Mode>(existing?.type ?? route.params?.mode ?? 'text');
   const [text, setText] = useState(existing?.text ?? '');
@@ -190,7 +192,7 @@ export function CreateJournalScreen() {
         updateEntry(existing.id, { type: 'text', text, photos });
         savedId = existing.id;
       } else {
-        savedId = createEntry({ type: 'text', text, photos }).id;
+        savedId = createEntry({ type: 'text', text, photos, createdAt: seedAt }).id;
       }
     } else {
       const voice = {
@@ -204,7 +206,7 @@ export function CreateJournalScreen() {
         updateEntry(existing.id, voice);
         savedId = existing.id;
       } else {
-        savedId = createEntry(voice).id;
+        savedId = createEntry({ ...voice, createdAt: seedAt }).id;
       }
       // Persist the recording durably (Firebase Storage) when signed in.
       if (user && audioUri && audioUri.startsWith('file:')) {
@@ -260,7 +262,7 @@ export function CreateJournalScreen() {
   const header = (
     <ScreenHeader
       title={existing ? 'Edit journal' : 'New Journal'}
-      subtitle={formatWeekdayMonthDay(existing?.createdAt ?? new Date().toISOString())}
+      subtitle={formatWeekdayMonthDay(existing?.createdAt ?? seedAt ?? new Date().toISOString())}
       left={<IconButton name="chevron-back" onPress={() => navigation.goBack()} accessibilityLabel="Go back" />}
     />
   );

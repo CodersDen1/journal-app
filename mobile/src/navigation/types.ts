@@ -10,7 +10,14 @@ export type TabParamList = {
 export type RootStackParamList = {
   Tabs: NavigatorScreenParams<TabParamList> | undefined;
   CreateJournal:
-    | { entryId?: string; mode?: 'text' | 'voice'; audioUri?: string; audioDuration?: number }
+    | {
+        entryId?: string;
+        mode?: 'text' | 'voice';
+        audioUri?: string;
+        audioDuration?: number;
+        /** Seed timestamp (ISO) for a new entry — e.g. an hour tapped on the day timeline. */
+        at?: string;
+      }
     | undefined;
   JournalDetail: { entryId: string };
   Search: undefined;
