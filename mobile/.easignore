@@ -1,0 +1,20 @@
+# EAS Build upload ignore. When present, EAS uses THIS instead of .gitignore.
+# Everything not listed here is uploaded — importantly, google-services.json
+# (git-ignored, but REQUIRED for the Android/Firebase build) is included.
+
+node_modules/
+.git/
+.expo/
+dist/
+web-build/
+ios/
+android/
+*.log
+.DS_Store
+
+# Local env — build-time values come from eas.json instead
+.env
+.env.*
+
+# iOS-only Firebase config isn't needed for the Android build
+GoogleService-Info.plist
