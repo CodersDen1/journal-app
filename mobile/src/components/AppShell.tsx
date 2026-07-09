@@ -1,5 +1,5 @@
 import React from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View, ViewStyle } from 'react-native';
+import { KeyboardAvoidingView, ScrollView, StyleSheet, View, ViewStyle } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { colors, spacing } from '../theme';
@@ -44,10 +44,12 @@ export function AppShell({
   return (
     <KeyboardAvoidingView
       style={[styles.root, { backgroundColor: colors[background], paddingTop: insets.top }]}
-      // 'padding' lifts the whole column (footer included) above the keyboard on
-      // iOS; Android relies on window resize. Scroll screens additionally scroll
-      // the focused input into view (see scrollRef).
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      // 'padding' lifts the whole column (footer included) above the keyboard.
+      // Needed on Android too: with edge-to-edge enabled (Expo SDK 57) the window
+      // no longer resizes for the keyboard, so adjustResize alone leaves the fixed
+      // footer and the bottom of scroll content hidden behind it. Scroll screens
+      // additionally scroll the focused input into view (see scrollRef).
+      behavior="padding"
     >
       {header ? <View style={styles.header}>{header}</View> : null}
 

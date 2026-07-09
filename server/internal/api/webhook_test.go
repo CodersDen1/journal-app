@@ -1,6 +1,9 @@
 package api
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,25 +14,33 @@ import (
 	"still/server/internal/config"
 	"still/server/internal/entitlements"
 	"still/server/internal/gemini"
-	"still/server/internal/revenuecat"
 	"still/server/internal/store"
+	"still/server/internal/stripe"
 )
 
-const testWebhookAuth = "whsecret"
+const testWebhookSecret = "whsec_test"
 
 // newWebhookRouter builds a router backed by the real entitlement service with
-// enforcement on and no RevenueCat key, so resolution falls back to the
-// webhook-maintained store value — exactly the no-key production/dev path.
+// enforcement on and no Stripe API key, so resolution falls back to the
+// webhook-maintained store value — exactly the webhook-driven production path.
 func newWebhookRouter() http.Handler {
 	st := store.NewMemoryStore()
-	svc := entitlements.New(st, revenuecat.New("", "pro", false), true /* enforced */, nil /* no bypass */)
-	return NewRouter(st, gemini.New("", "", ""), nil, nil, config.AuthModeDisabled, svc, testWebhookAuth, "pro")
+	sc := stripe.New("" /* no api key */, testWebhookSecret)
+	svc := entitlements.New(st, sc, true /* enforced */, nil /* no bypass */)
+	return NewRouter(st, gemini.New("", "", ""), nil, nil, config.AuthModeDisabled, svc, sc, BillingConfig{})
 }
 
-func postWebhook(h http.Handler, auth, body string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/revenuecat/webhook", strings.NewReader(body))
-	if auth != "" {
-		req.Header.Set("Authorization", auth)
+// signStripe builds a valid Stripe-Signature header for a body at time ts.
+func signStripe(secret, body string, ts int64) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(fmt.Sprintf("%d.%s", ts, body)))
+	return fmt.Sprintf("t=%d,v1=%s", ts, hex.EncodeToString(mac.Sum(nil)))
+}
+
+func postWebhook(h http.Handler, sig, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/stripe/webhook", strings.NewReader(body))
+	if sig != "" {
+		req.Header.Set("Stripe-Signature", sig)
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -42,46 +53,52 @@ func getStatus(h http.Handler, path string) int {
 	return rec.Code
 }
 
-// event builds a webhook body for the fixed dev-user (auth is disabled, so the
-// gate resolves uid "dev-user").
-func event(eventType string, expiresMs int64) string {
-	return fmt.Sprintf(`{"event":{"type":%q,"app_user_id":"dev-user","product_id":"still_pro_monthly","entitlement_ids":["pro"],"period_type":"TRIAL","store":"APP_STORE","expiration_at_ms":%d}}`, eventType, expiresMs)
+// subEvent builds a customer.subscription.updated body for the fixed dev-user
+// (auth is disabled, so the gate resolves uid "dev-user").
+func subEvent(status string, periodEnd int64) string {
+	return fmt.Sprintf(`{"type":"customer.subscription.updated","data":{"object":{`+
+		`"id":"sub_1","customer":"cus_1","status":%q,"cancel_at_period_end":false,`+
+		`"current_period_end":%d,"metadata":{"uid":"dev-user"},`+
+		`"items":{"data":[{"price":{"id":"price_1"}}]}}}}`, status, periodEnd)
 }
 
-func TestWebhookRejectsBadAuth(t *testing.T) {
+func TestWebhookRejectsBadSignature(t *testing.T) {
 	h := newWebhookRouter()
-	future := time.Now().Add(24 * time.Hour).UnixMilli()
+	body := subEvent("active", time.Now().Add(24*time.Hour).Unix())
 
-	if rec := postWebhook(h, "", event("INITIAL_PURCHASE", future)); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("missing auth: got %d, want 401", rec.Code)
+	if rec := postWebhook(h, "", body); rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing signature: got %d, want 400", rec.Code)
 	}
-	if rec := postWebhook(h, "wrong", event("INITIAL_PURCHASE", future)); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("wrong auth: got %d, want 401", rec.Code)
+	if rec := postWebhook(h, "t=1,v1=deadbeef", body); rec.Code != http.StatusBadRequest {
+		t.Fatalf("wrong signature: got %d, want 400", rec.Code)
 	}
 }
 
 func TestWebhookOpensAndClosesGate(t *testing.T) {
 	h := newWebhookRouter()
-	future := time.Now().Add(24 * time.Hour).UnixMilli()
+	now := time.Now().Unix()
+	future := time.Now().Add(24 * time.Hour).Unix()
 
 	// No entitlement yet → gated route refused.
 	if code := getStatus(h, "/api/journals"); code != http.StatusPaymentRequired {
-		t.Fatalf("before purchase: got %d, want 402", code)
+		t.Fatalf("before subscription: got %d, want 402", code)
 	}
 
-	// A purchase event opens the gate.
-	if rec := postWebhook(h, testWebhookAuth, event("INITIAL_PURCHASE", future)); rec.Code != http.StatusOK {
-		t.Fatalf("purchase webhook: got %d, want 200", rec.Code)
+	// An active subscription opens the gate.
+	active := subEvent("active", future)
+	if rec := postWebhook(h, signStripe(testWebhookSecret, active, now), active); rec.Code != http.StatusOK {
+		t.Fatalf("active webhook: got %d, want 200", rec.Code)
 	}
 	if code := getStatus(h, "/api/journals"); code != http.StatusOK {
-		t.Fatalf("after purchase: got %d, want 200", code)
+		t.Fatalf("after subscription: got %d, want 200", code)
 	}
 
-	// An expiration event closes it again.
-	if rec := postWebhook(h, testWebhookAuth, event("EXPIRATION", future)); rec.Code != http.StatusOK {
-		t.Fatalf("expiration webhook: got %d, want 200", rec.Code)
+	// A canceled subscription closes it again.
+	canceled := subEvent("canceled", future)
+	if rec := postWebhook(h, signStripe(testWebhookSecret, canceled, now), canceled); rec.Code != http.StatusOK {
+		t.Fatalf("cancel webhook: got %d, want 200", rec.Code)
 	}
 	if code := getStatus(h, "/api/journals"); code != http.StatusPaymentRequired {
-		t.Fatalf("after expiration: got %d, want 402", code)
+		t.Fatalf("after cancel: got %d, want 402", code)
 	}
 }

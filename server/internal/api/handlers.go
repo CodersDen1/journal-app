@@ -11,6 +11,7 @@ import (
 	"still/server/internal/gemini"
 	"still/server/internal/model"
 	"still/server/internal/store"
+	"still/server/internal/stripe"
 )
 
 // maxAudioBytes caps the size of an uploaded audio file (~20MB).
@@ -26,6 +27,18 @@ type Entitler interface {
 	Invalidate(uid string)
 }
 
+// BillingConfig holds the Stripe redirect URLs and the plan price ids. Empty URL
+// fields are derived from the incoming request host; a plan with an empty price
+// id is simply not offered.
+type BillingConfig struct {
+	SuccessURL      string
+	CancelURL       string
+	PortalReturnURL string
+	MonthlyPriceID  string
+	YearlyPriceID   string
+	LifetimePriceID string
+}
+
 // API holds the dependencies shared by the HTTP handlers.
 type API struct {
 	store    store.Store
@@ -33,28 +46,24 @@ type API struct {
 	ttsCache *ttsCache
 	blobs    *blob.Store // Cloud Storage; nil when storage is disabled.
 	ent      Entitler
-	// webhookAuth is the expected value of the RevenueCat webhook's Authorization
-	// header. Empty disables the webhook (returns 503).
-	webhookAuth string
-	// entitlementID is the RevenueCat entitlement identifier this app gates on.
-	entitlementID string
+	// stripe drives subscription billing. It is safe when unconfigured (billing
+	// endpoints report unavailable) — see Configured()/WebhookConfigured().
+	stripe  *stripe.Client
+	billing BillingConfig
 }
 
 // New returns an API bound to the given store, Gemini client, (optional) blob
-// store, entitlement resolver, RevenueCat webhook secret, and entitlement id. A
-// nil blobs disables Storage-backed persistence.
-func New(s store.Store, g *gemini.Client, blobs *blob.Store, ent Entitler, webhookAuth, entitlementID string) *API {
-	if entitlementID == "" {
-		entitlementID = "pro"
-	}
+// store, entitlement resolver, Stripe client, and billing config. A nil blobs
+// disables Storage-backed persistence.
+func New(s store.Store, g *gemini.Client, blobs *blob.Store, ent Entitler, sc *stripe.Client, billing BillingConfig) *API {
 	return &API{
-		store:         s,
-		gemini:        g,
-		ttsCache:      newTTSCache(ttsCacheCap),
-		blobs:         blobs,
-		ent:           ent,
-		webhookAuth:   webhookAuth,
-		entitlementID: entitlementID,
+		store:    s,
+		gemini:   g,
+		ttsCache: newTTSCache(ttsCacheCap),
+		blobs:    blobs,
+		ent:      ent,
+		stripe:   sc,
+		billing:  billing,
 	}
 }
 
@@ -150,8 +159,8 @@ func (a *API) getEntitlement(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ent)
 }
 
-// refreshEntitlement forces a re-check against RevenueCat and returns the fresh
-// entitlement. The client calls this immediately after a purchase or restore.
+// refreshEntitlement forces a re-check against Stripe and returns the fresh
+// entitlement. The client calls this after returning from Checkout or the portal.
 func (a *API) refreshEntitlement(w http.ResponseWriter, r *http.Request) {
 	uid, ok := a.uid(w, r)
 	if !ok {

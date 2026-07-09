@@ -21,8 +21,8 @@ import (
 	"still/server/internal/entitlements"
 	"still/server/internal/firebaseapp"
 	"still/server/internal/gemini"
-	"still/server/internal/revenuecat"
 	"still/server/internal/store"
+	"still/server/internal/stripe"
 )
 
 func main() {
@@ -88,16 +88,22 @@ func main() {
 		}
 	}
 
-	// Subscription gating: a RevenueCat REST client (used when a secret key is
+	// Subscription gating: a Stripe REST client (used when a secret key is
 	// configured) behind a caching entitlement service. When PaywallEnforced is
 	// false the service treats everyone as entitled, so local dev is unaffected.
-	rcClient := revenuecat.New(cfg.RevenueCatSecretKey, cfg.RevenueCatEntitlementID, cfg.RevenueCatSandbox)
-	entService := entitlements.New(st, rcClient, cfg.PaywallEnforced, cfg.PaywallBypassDomains)
+	stripeClient := stripe.New(cfg.StripeSecretKey, cfg.StripeWebhookSecret)
+	entService := entitlements.New(st, stripeClient, cfg.PaywallEnforced, cfg.PaywallBypassDomains)
 
 	// Build router, then wrap with logging + CORS (logging outermost so
 	// preflight requests are logged too).
-	handler := api.NewRouter(st, geminiClient, blobs, verifier, cfg.AuthMode,
-		entService, cfg.RevenueCatWebhookAuth, cfg.RevenueCatEntitlementID)
+	handler := api.NewRouter(st, geminiClient, blobs, verifier, cfg.AuthMode, entService, stripeClient, api.BillingConfig{
+		SuccessURL:      cfg.StripeSuccessURL,
+		CancelURL:       cfg.StripeCancelURL,
+		PortalReturnURL: cfg.StripePortalReturnURL,
+		MonthlyPriceID:  cfg.StripePriceMonthly,
+		YearlyPriceID:   cfg.StripePriceYearly,
+		LifetimePriceID: cfg.StripePriceLifetime,
+	})
 	handler = api.Logging(api.CORS(cfg.CORSOrigins)(handler))
 
 	addr := ":" + cfg.Port

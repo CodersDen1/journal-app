@@ -11,9 +11,10 @@ import (
 	"still/server/internal/gemini"
 	"still/server/internal/model"
 	"still/server/internal/store"
+	"still/server/internal/stripe"
 )
 
-// fakeEnt is a controllable Entitler for testing the gate without RevenueCat.
+// fakeEnt is a controllable Entitler for testing the gate without Stripe.
 type fakeEnt struct {
 	entitled bool
 }
@@ -27,7 +28,7 @@ func (f *fakeEnt) Refresh(context.Context, string) (model.Entitlement, error) {
 }
 func (f *fakeEnt) Invalidate(string) {}
 
-func newTestRouter(ent Entitler, webhookAuth string) http.Handler {
+func newTestRouter(ent Entitler) http.Handler {
 	return NewRouter(
 		store.NewMemoryStore(),
 		gemini.New("", "", ""),
@@ -35,13 +36,13 @@ func newTestRouter(ent Entitler, webhookAuth string) http.Handler {
 		nil, // no verifier (auth disabled)
 		config.AuthModeDisabled,
 		ent,
-		webhookAuth,
-		"pro",
+		stripe.New("", ""),
+		BillingConfig{}, // billing config unused in these tests
 	)
 }
 
 func TestGateBlocksWithoutEntitlement(t *testing.T) {
-	h := newTestRouter(&fakeEnt{entitled: false}, "")
+	h := newTestRouter(&fakeEnt{entitled: false})
 
 	// A gated route is refused with 402.
 	rec := httptest.NewRecorder()
@@ -64,7 +65,7 @@ func TestGateBlocksWithoutEntitlement(t *testing.T) {
 }
 
 func TestGateAllowsWithEntitlement(t *testing.T) {
-	h := newTestRouter(&fakeEnt{entitled: true}, "")
+	h := newTestRouter(&fakeEnt{entitled: true})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/journals", nil))

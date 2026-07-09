@@ -1,7 +1,8 @@
 import React from 'react';
-import { Alert, Linking, Platform, StyleSheet, Switch, Text, View } from 'react-native';
+import { Alert, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { AppShell, ScreenHeader, SettingRow } from '../components';
+import { ApiError } from '../lib/api';
 import { formatFullDate } from '../lib/format';
 import { useAppNavigation } from '../navigation/useAppNavigation';
 import { useAuth } from '../state/AuthContext';
@@ -49,30 +50,36 @@ export function ProfileScreen() {
   const navigation = useAppNavigation();
   const { profile, update } = useProfile();
   const { user, signOut } = useAuth();
-  const { entitlement, restore } = useEntitlement();
+  const { entitlement, manage, refresh } = useEntitlement();
 
   const signedIn = Boolean(user);
   const detail = subscriptionDetail(entitlement);
   const isPro = entitlement?.active || profile.plan === 'pro';
+  const isLifetime = entitlement?.periodType === 'lifetime';
+  const planLabel = isLifetime ? 'Still Pro · Lifetime' : isPro ? 'Still Pro' : 'Free';
 
-  const onRestore = async () => {
+  const onRefresh = async () => {
     try {
-      await restore();
-      Alert.alert('Restore complete', 'Your subscription is up to date.');
+      await refresh();
+      Alert.alert('Up to date', 'Your subscription status has been refreshed.');
     } catch {
-      Alert.alert('Nothing to restore', "We couldn't find a subscription for this account.");
+      Alert.alert('Couldn’t refresh', 'Please check your connection and try again.');
     }
   };
 
-  const onManage = () => {
-    const url = Platform.select({
-      ios: 'https://apps.apple.com/account/subscriptions',
-      android: 'https://play.google.com/store/account/subscriptions',
-      default: 'https://apps.apple.com/account/subscriptions',
-    });
-    Linking.openURL(url).catch(() =>
-      Alert.alert('Could not open', 'Manage your subscription from the App Store or Google Play.'),
-    );
+  const onManage = async () => {
+    try {
+      await manage();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        Alert.alert(
+          'Nothing to manage',
+          'You have complimentary access — there’s no Stripe subscription to manage.',
+        );
+        return;
+      }
+      Alert.alert('Couldn’t open billing', 'Please check your connection and try again.');
+    }
   };
 
   return (
@@ -89,10 +96,10 @@ export function ProfileScreen() {
 
       <SectionLabel>Subscription</SectionLabel>
       <Group>
-        <SettingRow label="Plan" value={isPro ? 'Still Pro' : 'Free'} />
+        <SettingRow label="Plan" value={planLabel} />
         {detail ? <SettingRow label={detail.label} value={detail.value} /> : null}
-        <SettingRow label="Restore purchases" onPress={() => void onRestore()} />
-        <SettingRow label="Manage subscription" onPress={onManage} last />
+        <SettingRow label="Refresh status" onPress={() => void onRefresh()} />
+        <SettingRow label="Manage subscription" onPress={() => void onManage()} last />
       </Group>
 
       <SectionLabel>Privacy</SectionLabel>

@@ -11,8 +11,8 @@ import (
 	"still/server/internal/config"
 	"still/server/internal/entitlements"
 	"still/server/internal/gemini"
-	"still/server/internal/revenuecat"
 	"still/server/internal/store"
+	"still/server/internal/stripe"
 )
 
 // tokenVerifier returns a fixed token, standing in for Firebase verification so
@@ -23,13 +23,13 @@ func (v tokenVerifier) VerifyIDToken(context.Context, string) (*fbauth.Token, er
 	return v.tok, nil
 }
 
-// bypassRouter builds a router with the paywall enforced (no RevenueCat key) and
+// bypassRouter builds a router with the paywall enforced (no Stripe key) and
 // famproperties.com allowlisted, authenticating via the given claims.
 func bypassRouter(claims map[string]any) http.Handler {
 	st := store.NewMemoryStore()
-	svc := entitlements.New(st, revenuecat.New("", "pro", false), true, []string{"famproperties.com"})
+	svc := entitlements.New(st, stripe.New("", ""), true, []string{"famproperties.com"})
 	verifier := tokenVerifier{tok: &fbauth.Token{UID: "u1", Claims: claims}}
-	return NewRouter(st, gemini.New("", "", ""), nil, verifier, config.AuthModeFirebase, svc, "", "pro")
+	return NewRouter(st, gemini.New("", "", ""), nil, verifier, config.AuthModeFirebase, svc, stripe.New("", ""), BillingConfig{})
 }
 
 func gatedGet(h http.Handler) int {

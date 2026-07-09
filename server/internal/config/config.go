@@ -46,12 +46,16 @@ type Config struct {
 
 	CORSOrigins []string // allowed origins; ["*"] means any.
 
-	// RevenueCat subscription gating.
-	RevenueCatSecretKey     string // REST secret key (sk_...); enables server-side verification.
-	RevenueCatEntitlementID string // entitlement identifier in the dashboard, e.g. "pro".
-	RevenueCatWebhookAuth   string // expected value of the webhook's Authorization header.
-	RevenueCatSandbox       bool   // send X-Is-Sandbox on REST calls (Test Store / sandbox testing).
-	PaywallEnforced         bool   // when true, protected endpoints require an active entitlement.
+	// Stripe subscription billing.
+	StripeSecretKey       string // sk_...; enables Checkout, the billing portal, and live verification.
+	StripeWebhookSecret   string // whsec_...; verifies incoming webhook signatures.
+	StripePriceMonthly    string // price_...; recurring monthly plan.
+	StripePriceYearly     string // price_...; recurring yearly plan.
+	StripePriceLifetime   string // price_...; one-time lifetime purchase.
+	StripeSuccessURL      string // absolute URL Checkout redirects to on success ("" → derived from the request host).
+	StripeCancelURL       string // absolute URL Checkout redirects to on cancel ("" → derived).
+	StripePortalReturnURL string // absolute URL the billing portal returns to ("" → derived).
+	PaywallEnforced       bool   // when true, protected endpoints require an active subscription.
 	// PaywallBypassDomains are email domains (verified) that always have full
 	// access, bypassing the paywall — e.g. internal company accounts.
 	PaywallBypassDomains []string
@@ -76,11 +80,15 @@ func Load() Config {
 		StorageBucket:   normalizeBucket(os.Getenv("FIREBASE_STORAGE_BUCKET")),
 		CORSOrigins:     parseOrigins(getenv("CORS_ORIGINS", "*")),
 
-		RevenueCatSecretKey:     os.Getenv("REVENUECAT_SECRET_KEY"),
-		RevenueCatEntitlementID: getenv("REVENUECAT_ENTITLEMENT_ID", "pro"),
-		RevenueCatWebhookAuth:   os.Getenv("REVENUECAT_WEBHOOK_AUTH"),
-		RevenueCatSandbox:       parseBool(os.Getenv("REVENUECAT_SANDBOX")),
-		PaywallBypassDomains:    parseDomains(getenv("PAYWALL_BYPASS_DOMAINS", "famproperties.com")),
+		StripeSecretKey:       os.Getenv("STRIPE_SECRET_KEY"),
+		StripeWebhookSecret:   os.Getenv("STRIPE_WEBHOOK_SECRET"),
+		StripePriceMonthly:    strings.TrimSpace(os.Getenv("STRIPE_PRICE_MONTHLY")),
+		StripePriceYearly:     strings.TrimSpace(os.Getenv("STRIPE_PRICE_YEARLY")),
+		StripePriceLifetime:   strings.TrimSpace(os.Getenv("STRIPE_PRICE_LIFETIME")),
+		StripeSuccessURL:      strings.TrimSpace(os.Getenv("STRIPE_SUCCESS_URL")),
+		StripeCancelURL:       strings.TrimSpace(os.Getenv("STRIPE_CANCEL_URL")),
+		StripePortalReturnURL: strings.TrimSpace(os.Getenv("STRIPE_PORTAL_RETURN_URL")),
+		PaywallBypassDomains:  parseDomains(getenv("PAYWALL_BYPASS_DOMAINS", "famproperties.com")),
 	}
 
 	// Normalize to known values.
@@ -91,10 +99,10 @@ func Load() Config {
 		cfg.Store = StoreFirestore
 	}
 
-	// Paywall enforcement defaults on when a RevenueCat secret key is present and
-	// off otherwise (so zero-setup local dev is unaffected). PAYWALL_ENFORCED, when
+	// Paywall enforcement defaults on when a Stripe secret key is present and off
+	// otherwise (so zero-setup local dev is unaffected). PAYWALL_ENFORCED, when
 	// set, overrides the default in either direction.
-	cfg.PaywallEnforced = strings.TrimSpace(cfg.RevenueCatSecretKey) != ""
+	cfg.PaywallEnforced = strings.TrimSpace(cfg.StripeSecretKey) != ""
 	if v := strings.TrimSpace(os.Getenv("PAYWALL_ENFORCED")); v != "" {
 		cfg.PaywallEnforced = parseBool(v)
 	}
@@ -123,9 +131,9 @@ func (c Config) LogEffective() {
 	if len(c.PaywallBypassDomains) > 0 {
 		bypass = strings.Join(c.PaywallBypassDomains, ",")
 	}
-	log.Printf("config: AUTH_MODE=%s STORE=%s PORT=%s gemini=%s storage=%s bucket=%s paywall=%s revenuecat=%s bypass=%s",
+	log.Printf("config: AUTH_MODE=%s STORE=%s PORT=%s gemini=%s storage=%s bucket=%s paywall=%s stripe=%s bypass=%s",
 		c.AuthMode, c.Store, c.Port, geminiState(c.GeminiAPIKey), storageState(c.StorageEnabled()), bucket,
-		storageState(c.PaywallEnforced), geminiState(c.RevenueCatSecretKey), bypass)
+		storageState(c.PaywallEnforced), geminiState(c.StripeSecretKey), bypass)
 }
 
 // parseBool interprets common truthy string values ("1", "true", "yes", "on").

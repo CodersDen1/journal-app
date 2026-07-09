@@ -1,4 +1,12 @@
-import type { Entitlement, InsightDigest, InsightPeriod, JournalEntry, ProfileSettings } from '../types';
+import type {
+  BillingPlan,
+  BillingPlanKey,
+  Entitlement,
+  InsightDigest,
+  InsightPeriod,
+  JournalEntry,
+  ProfileSettings,
+} from '../types';
 
 /**
  * Client for the Still backend (Go + Firestore + Gemini).
@@ -107,9 +115,27 @@ export const api = {
     return request('/api/entitlement');
   },
 
-  /** Force the server to re-verify entitlement with RevenueCat (after purchase/restore). */
+  /** Force the server to re-verify entitlement with Stripe (after checkout/portal). */
   async refreshEntitlement(): Promise<Entitlement> {
     return request('/api/entitlement/refresh', { method: 'POST' });
+  },
+
+  /** List purchasable plans with live Stripe prices. */
+  async billingPlans(): Promise<BillingPlan[]> {
+    return request('/api/billing/plans');
+  },
+
+  /** Start a Stripe Checkout session for a plan; returns the hosted URL to open. */
+  async createCheckout(plan: BillingPlanKey): Promise<{ url: string }> {
+    return request('/api/billing/checkout', {
+      method: 'POST',
+      body: JSON.stringify({ plan }),
+    });
+  },
+
+  /** Open the Stripe billing portal (manage/cancel); returns the hosted URL to open. */
+  async createPortal(): Promise<{ url: string }> {
+    return request('/api/billing/portal', { method: 'POST' });
   },
 
   async listEntries(): Promise<JournalEntry[]> {

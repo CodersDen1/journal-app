@@ -25,13 +25,13 @@ type Store interface {
 	// false when nothing has been recorded yet (treat as inactive).
 	Entitlement(ctx context.Context, uid string) (model.Entitlement, bool, error)
 	// SaveEntitlement records the user's entitlement. It is written only by the
-	// RevenueCat webhook and server-side REST verification, never by the client.
+	// Stripe webhook and server-side REST verification, never by the client.
 	SaveEntitlement(ctx context.Context, uid string, e model.Entitlement) error
 	Close() error
 }
 
 // defaultEntitlement returns the inactive entitlement used before any
-// RevenueCat signal has been recorded for a user.
+// Stripe signal has been recorded for a user.
 func defaultEntitlement() model.Entitlement {
 	return model.Entitlement{Active: false, Source: "none"}
 }

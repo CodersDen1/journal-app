@@ -7,19 +7,10 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import type { PurchasesPackage } from 'react-native-purchases';
+import { AppState, Linking } from 'react-native';
 
 import { api } from '../lib/api';
-import {
-  addCustomerInfoListener,
-  configurePurchases,
-  getPackages,
-  identify,
-  logOutPurchases,
-  purchasePackage,
-  restorePurchases,
-} from '../lib/purchases';
-import type { Entitlement } from '../types';
+import type { BillingPlanKey, Entitlement } from '../types';
 import { useAuth } from './AuthContext';
 
 /** 'loading' until the server's authoritative status is known. */
@@ -29,128 +20,121 @@ interface EntitlementContextValue {
   /** Authoritative gate signal, resolved from the backend. */
   status: EntitlementStatus;
   entitlement: Entitlement | null;
-  /** Purchasable packages from the current RevenueCat offering. */
-  packages: PurchasesPackage[];
-  /** True while a purchase/restore is in flight. */
+  /** True while a checkout/portal hand-off is being prepared. */
   busy: boolean;
-  /** Complete a purchase, then let the server re-verify. Throws on failure. */
-  purchase: (pkg: PurchasesPackage) => Promise<void>;
-  /** Restore prior purchases, then let the server re-verify. */
-  restore: () => Promise<void>;
+  /** Open Stripe Checkout (hosted) in the browser to buy the given plan. */
+  subscribe: (plan: BillingPlanKey) => Promise<void>;
+  /** Open the Stripe billing portal to update payment or cancel. */
+  manage: () => Promise<void>;
   /** Re-ask the server for the authoritative status. */
   refresh: () => Promise<void>;
 }
 
 const EntitlementContext = createContext<EntitlementContextValue | undefined>(undefined);
 
+// After returning from Checkout the subscription can take a moment to appear
+// (the Stripe webhook usually lands within a second or two). Poll a few times
+// before settling on the result.
+const POLL_TRIES = 6;
+const POLL_DELAY_MS = 2000;
+
 export function EntitlementProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const [status, setStatus] = useState<EntitlementStatus>('loading');
   const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
-  const [packages, setPackages] = useState<PurchasesPackage[]>([]);
   const [busy, setBusy] = useState(false);
 
   // Bumped on every auth change so a slow in-flight resolution can't clobber the
   // status of a newer user.
   const epochRef = useRef(0);
-  // Current user, readable synchronously by callbacks (the SDK listener can fire
-  // before the sign-in effect runs).
+  // Current user, readable synchronously by callbacks.
   const userRef = useRef(user);
   userRef.current = user;
+  // Set when we hand off to the browser (checkout/portal) so returning to the
+  // foreground triggers a re-verify.
+  const awaitingReturn = useRef(false);
 
-  // The server is the source of truth. `force` re-verifies against RevenueCat
-  // (used after a purchase/restore); otherwise it reads the cached status.
-  const syncFromServer = useCallback(async (force: boolean) => {
-    // No signed-in user → no server identity to resolve; skip (avoids 401s from
-    // the SDK listener firing before/after sign-in).
-    if (!userRef.current) return;
+  // The server is the source of truth. `force` re-verifies against Stripe (used
+  // after checkout/portal); otherwise it reads the cached status.
+  const syncFromServer = useCallback(async (force: boolean): Promise<Entitlement | null> => {
+    if (!userRef.current) return null;
     const epoch = epochRef.current;
     try {
       const ent = force ? await api.refreshEntitlement() : await api.entitlement();
-      if (epoch !== epochRef.current) return;
+      if (epoch !== epochRef.current) return null;
       setEntitlement(ent);
       setStatus(ent.active ? 'active' : 'inactive');
+      return ent;
     } catch {
-      // Can't verify → fail closed (paywall). The server independently gates every
-      // data request, so this only affects which screen we show.
-      if (epoch !== epochRef.current) return;
+      if (epoch !== epochRef.current) return null;
+      // Can't verify → fail closed (paywall). The server independently gates
+      // every data request, so this only affects which screen we show.
       setEntitlement(null);
       setStatus('inactive');
+      return null;
     }
   }, []);
 
-  // Configure the SDK once and re-verify whenever CustomerInfo changes (renewals,
-  // purchases made outside our flow, restores on other screens).
-  useEffect(() => {
-    configurePurchases();
-    // Routine CustomerInfo changes just re-read the (cached) server status;
-    // purchase()/restore() force a fresh RevenueCat re-check themselves.
-    const unsubscribe = addCustomerInfoListener(() => void syncFromServer(false));
-    return unsubscribe;
-  }, [syncFromServer]);
-
-  // Identify the RevenueCat customer to the signed-in user, load offerings, and
-  // resolve the authoritative status.
+  // Resolve the authoritative status on sign-in / sign-out.
   useEffect(() => {
     epochRef.current += 1;
-    let cancelled = false;
-
     if (!user) {
       setStatus('loading');
       setEntitlement(null);
-      setPackages([]);
-      void logOutPurchases();
       return;
     }
-
     setStatus('loading');
-    (async () => {
-      try {
-        await identify(user.uid);
-      } catch {
-        // Non-fatal: the server still resolves entitlement by Firebase uid.
-      }
-      getPackages()
-        .then((pkgs) => {
-          if (!cancelled) setPackages(pkgs);
-        })
-        .catch(() => undefined);
-      await syncFromServer(false);
-    })();
-
-    return () => {
-      cancelled = true;
-    };
+    void syncFromServer(false);
   }, [user, syncFromServer]);
 
-  const purchase = useCallback(
-    async (pkg: PurchasesPackage) => {
-      setBusy(true);
-      try {
-        await purchasePackage(pkg);
-        await syncFromServer(true);
-      } finally {
-        setBusy(false);
-      }
-    },
-    [syncFromServer],
-  );
-
-  const restore = useCallback(async () => {
-    setBusy(true);
-    try {
-      await restorePurchases();
-      await syncFromServer(true);
-    } finally {
-      setBusy(false);
+  // Poll for activation, stopping as soon as the server reports active.
+  const pollForActivation = useCallback(async () => {
+    for (let i = 0; i < POLL_TRIES; i += 1) {
+      const ent = await syncFromServer(true);
+      if (ent?.active) return;
+      await new Promise((resolve) => setTimeout(resolve, POLL_DELAY_MS));
     }
   }, [syncFromServer]);
 
-  const refresh = useCallback(() => syncFromServer(true), [syncFromServer]);
+  // When we come back from the browser (checkout/portal), re-verify.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && awaitingReturn.current) {
+        awaitingReturn.current = false;
+        void pollForActivation();
+      }
+    });
+    return () => sub.remove();
+  }, [pollForActivation]);
+
+  // Ask the server for a hosted Stripe URL and open it. Throws on failure so the
+  // caller can surface an alert.
+  const openHosted = useCallback(async (getUrl: () => Promise<{ url: string }>) => {
+    setBusy(true);
+    try {
+      const { url } = await getUrl();
+      awaitingReturn.current = true;
+      await Linking.openURL(url);
+    } catch (err) {
+      awaitingReturn.current = false;
+      throw err;
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  const subscribe = useCallback(
+    (plan: BillingPlanKey) => openHosted(() => api.createCheckout(plan)),
+    [openHosted],
+  );
+  const manage = useCallback(() => openHosted(() => api.createPortal()), [openHosted]);
+  const refresh = useCallback(async () => {
+    await syncFromServer(true);
+  }, [syncFromServer]);
 
   const value = useMemo<EntitlementContextValue>(
-    () => ({ status, entitlement, packages, busy, purchase, restore, refresh }),
-    [status, entitlement, packages, busy, purchase, restore, refresh],
+    () => ({ status, entitlement, busy, subscribe, manage, refresh }),
+    [status, entitlement, busy, subscribe, manage, refresh],
   );
 
   return <EntitlementContext.Provider value={value}>{children}</EntitlementContext.Provider>;

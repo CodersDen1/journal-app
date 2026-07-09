@@ -7,29 +7,36 @@ import (
 	"still/server/internal/blob"
 	"still/server/internal/gemini"
 	"still/server/internal/store"
+	"still/server/internal/stripe"
 )
 
 // NewRouter builds the application's HTTP handler.
 //
-// Routes fall into three tiers:
-//   - Public (no auth): GET /api/health and POST /api/revenuecat/webhook (the
-//     webhook authenticates with its own shared-secret header).
-//   - Authenticated only: /api/me and the /api/entitlement endpoints — reachable
-//     without a subscription so the client can identify the user and learn
-//     whether to show the paywall.
+// Routes fall into four tiers:
+//   - Public (no auth): GET /api/health, POST /api/stripe/webhook (verified by
+//     its Stripe signature), and the GET /billing return pages Checkout redirects
+//     to.
+//   - Authenticated only: /api/me, the /api/entitlement endpoints, and the
+//     /api/billing checkout/portal endpoints — reachable without a subscription
+//     so the client can identify the user, learn whether to show the paywall, and
+//     start a subscription.
 //   - Authenticated + entitled: every data/feature route, each wrapped with
 //     requireEntitlement so an un-subscribed (or tampered) client gets 402.
 //
-// A nil blobs disables Storage-backed persistence (TTS falls back to on-demand
-// generation and the recording endpoints report unavailable).
-func NewRouter(s store.Store, g *gemini.Client, blobs *blob.Store, verifier auth.Verifier, authMode string, ent Entitler, webhookAuth, entitlementID string) http.Handler {
-	a := New(s, g, blobs, ent, webhookAuth, entitlementID)
+// billing carries the Stripe redirect URLs and plan price ids; empty URL fields
+// are derived from the incoming request host. A nil blobs disables Storage-backed
+// persistence.
+func NewRouter(s store.Store, g *gemini.Client, blobs *blob.Store, verifier auth.Verifier, authMode string, ent Entitler, sc *stripe.Client, billing BillingConfig) http.Handler {
+	a := New(s, g, blobs, ent, sc, billing)
 
 	protected := http.NewServeMux()
 	// Reachable without an active subscription.
 	protected.HandleFunc("GET /api/me", a.me)
 	protected.HandleFunc("GET /api/entitlement", a.getEntitlement)
 	protected.HandleFunc("POST /api/entitlement/refresh", a.refreshEntitlement)
+	protected.HandleFunc("GET /api/billing/plans", a.getPlans)
+	protected.HandleFunc("POST /api/billing/checkout", a.createCheckout)
+	protected.HandleFunc("POST /api/billing/portal", a.createPortal)
 
 	// Gated: require an active entitlement.
 	gate := a.requireEntitlement
@@ -55,8 +62,10 @@ func NewRouter(s store.Store, g *gemini.Client, blobs *blob.Store, verifier auth
 
 	root := http.NewServeMux()
 	root.HandleFunc("GET /api/health", a.health)
-	root.HandleFunc("POST /api/revenuecat/webhook", a.revenueCatWebhook) // authed by shared secret
-	root.Handle("/", authed)                                            // everything else goes through auth
+	root.HandleFunc("POST /api/stripe/webhook", a.stripeWebhook) // authed by Stripe signature
+	root.HandleFunc("GET /billing/success", a.billingSuccess)
+	root.HandleFunc("GET /billing/cancel", a.billingCancel)
+	root.Handle("/", authed) // everything else goes through auth
 
 	return root
 }

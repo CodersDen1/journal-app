@@ -13,6 +13,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   Image,
   Pressable,
   ScrollView,
@@ -168,6 +169,53 @@ export function CreateJournalScreen() {
     setShowTranscript(false);
     setPhase('idle');
   };
+
+  // Product decision: leaving mid-recording discards the take (no pause/resume).
+  // Navigating away is already covered by the unmount cleanup; this covers
+  // backgrounding — if the app is sent to the background while recording, stop
+  // and drop it so the user returns to a clean composer.
+  useEffect(() => {
+    if (phase !== 'recording') return;
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') return;
+      recorder.stop().catch(() => undefined);
+      void setAudioModeAsync({ allowsRecording: false });
+      resetRecording();
+    });
+    return () => sub.remove();
+    // resetRecording only calls stable state setters; recorder is a stable ref.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
+  // Warn before navigating away mid-recording: block the leave, confirm, and
+  // only then discard + proceed. Guarded on 'recording' so it never interferes
+  // with saving (which happens from the 'recorded' phase). leavingRef prevents
+  // the re-dispatched navigation from re-triggering the prompt.
+  const leavingRef = useRef(false);
+  useEffect(() => {
+    const unsub = navigation.addListener('beforeRemove', (e) => {
+      if (phase !== 'recording' || leavingRef.current) return;
+      e.preventDefault();
+      Alert.alert(
+        'Discard recording?',
+        'You’re still recording. If you leave now, this recording will be discarded.',
+        [
+          { text: 'Keep recording', style: 'cancel' },
+          {
+            text: 'Discard & leave',
+            style: 'destructive',
+            onPress: () => {
+              leavingRef.current = true;
+              recorder.stop().catch(() => undefined);
+              void setAudioModeAsync({ allowsRecording: false });
+              navigation.dispatch(e.data.action);
+            },
+          },
+        ],
+      );
+    });
+    return unsub;
+  }, [navigation, phase, recorder]);
 
   const togglePlay = () => {
     if (!audioUri) return;

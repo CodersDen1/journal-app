@@ -1,106 +1,116 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import type { PurchasesPackage } from "react-native-purchases";
+import { Ionicons } from '@expo/vector-icons';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import {
-  AppShell,
-  ScreenHeader,
-  IconButton,
-  PlanCard,
-  PrimaryButton,
-} from "../components";
-import { useAuth } from "../state/AuthContext";
-import { useEntitlement } from "../state/EntitlementContext";
-import { colors, spacing, type } from "../theme";
+import { AppShell, IconButton, PlanCard, PrimaryButton, ScreenHeader } from '../components';
+import { api } from '../lib/api';
+import { useAuth } from '../state/AuthContext';
+import { useEntitlement } from '../state/EntitlementContext';
+import { colors, spacing, type } from '../theme';
+import type { BillingPlan, BillingPlanKey } from '../types';
 
 const FEATURES: string[] = [
-  "Unlimited journal entries, text and voice",
-  "Weekly and monthly AI insights",
-  "Accurate voice transcription",
-  "Encrypted backup and sync across devices",
-  "Export your journal any time",
+  'Unlimited journal entries, text and voice',
+  'Weekly and monthly AI insights',
+  'Accurate voice transcription',
+  'Encrypted backup and sync across devices',
+  'Export your journal any time',
 ];
 
-interface PlanInfo {
-  title: string;
-  price: string;
-  period: string;
-  /** Human trial line, e.g. "7-day free trial" — null when none. */
-  trial: string | null;
-  badge?: string;
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  usd: '$',
+  eur: '€',
+  gbp: '£',
+  aed: 'AED ',
+  inr: '₹',
+};
+
+const PLAN_META: Record<BillingPlanKey, { title: string; badge?: string }> = {
+  monthly: { title: 'Monthly' },
+  yearly: { title: 'Yearly', badge: 'Best value' },
+  lifetime: { title: 'Lifetime' },
+};
+
+function formatAmount(amount: number, currency: string): string {
+  const symbol = CURRENCY_SYMBOLS[currency?.toLowerCase()] ?? (currency ? `${currency.toUpperCase()} ` : '$');
+  const major = amount / 100;
+  const value = Number.isInteger(major) ? String(major) : major.toFixed(2);
+  return `${symbol}${value}`;
 }
 
-/** Describe a RevenueCat package for the plan cards and CTA. */
-function describe(pkg: PurchasesPackage): PlanInfo {
-  const product = pkg.product;
-  const intro = product.introPrice;
-  const trial =
-    intro && intro.price === 0
-      ? `${intro.periodNumberOfUnits}-${intro.periodUnit.toLowerCase()} free trial`
-      : null;
+function planPeriod(plan: BillingPlan): string {
+  if (plan.mode === 'payment') return 'one-time';
+  if (plan.interval === 'year') return 'per year';
+  if (plan.interval === 'month') return 'per month';
+  return '';
+}
 
-  switch (pkg.packageType) {
-    case "ANNUAL":
-      return { title: "Yearly", price: product.priceString, period: "per year", trial, badge: "Best value" };
-    case "MONTHLY":
-      return { title: "Monthly", price: product.priceString, period: "per month", trial };
-    case "LIFETIME":
-      return { title: "Lifetime", price: product.priceString, period: "one-time", trial: null };
-    default:
-      return { title: product.title, price: product.priceString, period: "", trial };
-  }
+function planFeatures(plan: BillingPlan): string[] {
+  if (plan.key === 'lifetime') return ['One-time purchase', 'Yours forever'];
+  if (plan.key === 'yearly') return ['Billed annually', 'Cancel any time'];
+  return ['Billed monthly', 'Cancel any time'];
 }
 
 /**
  * Blocking subscription gate. Rendered by the app Shell whenever a signed-in
  * user has no active entitlement — there is no dismiss; the app is unreachable
- * until the server confirms an active subscription.
+ * until the server confirms access. Plans (and their live prices) come from the
+ * backend; choosing one opens Stripe's hosted Checkout in the browser and the
+ * status is re-verified on return.
  */
 export function PaywallScreen() {
-  const { packages, busy, purchase, restore, refresh } = useEntitlement();
+  const { busy, subscribe, refresh } = useEntitlement();
   const { signOut } = useAuth();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [plans, setPlans] = useState<BillingPlan[] | null>(null);
+  const [selectedKey, setSelectedKey] = useState<BillingPlanKey | null>(null);
+  const [checking, setChecking] = useState(false);
 
-  // Default to the annual package (or the first available) once offerings load.
   useEffect(() => {
-    if (selectedId || packages.length === 0) return;
-    const annual = packages.find((p) => p.packageType === "ANNUAL");
-    setSelectedId((annual ?? packages[0]).identifier);
-  }, [packages, selectedId]);
+    let cancelled = false;
+    api
+      .billingPlans()
+      .then((list) => {
+        if (cancelled) return;
+        setPlans(list);
+        // Default to yearly (best value) if offered, else the first plan.
+        const preferred = list.find((p) => p.key === 'yearly') ?? list[0];
+        if (preferred) setSelectedKey(preferred.key);
+      })
+      .catch(() => {
+        if (!cancelled) setPlans([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  const selected = useMemo(
-    () => packages.find((p) => p.identifier === selectedId) ?? null,
-    [packages, selectedId],
+  const selectedPlan = useMemo(
+    () => plans?.find((p) => p.key === selectedKey) ?? null,
+    [plans, selectedKey],
   );
+  const ctaLabel = selectedPlan?.mode === 'payment' ? 'Buy lifetime' : 'Subscribe';
 
   const onSubscribe = async () => {
-    if (!selected) return;
+    if (!selectedKey) return;
     try {
-      await purchase(selected);
-      // On success the Shell swaps to the app once the server confirms.
-    } catch (error) {
-      const e = error as { userCancelled?: boolean; message?: string };
-      if (e?.userCancelled) return;
-      Alert.alert("Purchase failed", e?.message ?? "Please try again.");
-    }
-  };
-
-  const onRestore = async () => {
-    try {
-      await restore();
+      await subscribe(selectedKey);
+      // On return from the browser the Shell swaps to the app once the server
+      // confirms (EntitlementContext re-verifies on foreground).
     } catch {
-      Alert.alert("Nothing to restore", "We couldn't find a previous subscription for this account.");
+      Alert.alert('Couldn’t start checkout', 'Please check your connection and try again.');
     }
   };
 
-  const selectedInfo = selected ? describe(selected) : null;
-  const ctaLabel = selectedInfo?.trial
-    ? "Start free trial"
-    : selectedInfo?.period === "one-time"
-      ? "Buy"
-      : "Subscribe";
-  const hasPlans = packages.length > 0;
+  const onAlreadySubscribed = async () => {
+    setChecking(true);
+    try {
+      await refresh();
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const hasPlans = (plans?.length ?? 0) > 0;
 
   return (
     <AppShell
@@ -110,7 +120,7 @@ export function PaywallScreen() {
           right={
             <IconButton
               name="refresh"
-              onPress={() => void refresh()}
+              onPress={() => void onAlreadySubscribed()}
               accessibilityLabel="Refresh subscription status"
             />
           }
@@ -118,32 +128,26 @@ export function PaywallScreen() {
       }
       footer={
         <View>
-          <PrimaryButton
-            label={ctaLabel}
-            onPress={onSubscribe}
-            loading={busy}
-            disabled={!selected}
-          />
-          <Pressable onPress={onRestore} accessibilityRole="button" style={styles.linkRow}>
-            <Text style={[type.caption, styles.link]}>Restore purchases</Text>
+          <PrimaryButton label={ctaLabel} onPress={onSubscribe} loading={busy} disabled={!selectedKey} />
+          <Pressable onPress={() => void onAlreadySubscribed()} accessibilityRole="button" style={styles.linkRow}>
+            <Text style={[type.caption, styles.link]}>
+              {checking ? 'Checking…' : 'I already subscribed'}
+            </Text>
           </Pressable>
           <Pressable onPress={() => void signOut()} accessibilityRole="button" style={styles.linkRow}>
             <Text style={[type.caption, styles.linkMuted]}>Sign out</Text>
           </Pressable>
           <Text style={[type.caption, styles.footerNote]}>
-            Cancel any time in your App Store or Google Play settings.
+            Secure checkout by Stripe. Cancel any time.
           </Text>
         </View>
       }
     >
       <View style={styles.hero}>
         <Text style={type.overline}>Still Pro</Text>
-        <Text style={[type.title, styles.heroTitle]}>
-          Your private journal, fully unlocked
-        </Text>
+        <Text style={[type.title, styles.heroTitle]}>Your private journal, fully unlocked</Text>
         <Text style={[type.bodyMuted, styles.heroBody]}>
-          Start with a free trial. Everything Still offers, for a calm long-term
-          practice.
+          Everything Still offers, for a calm long-term practice.
         </Text>
       </View>
 
@@ -158,32 +162,32 @@ export function PaywallScreen() {
 
       {hasPlans ? (
         <View style={styles.plans}>
-          {packages.map((pkg) => {
-            const info = describe(pkg);
+          {plans!.map((plan) => {
+            const meta = PLAN_META[plan.key];
+            const price =
+              plan.amount > 0 ? formatAmount(plan.amount, plan.currency) : 'See price at checkout';
             return (
               <PlanCard
-                key={pkg.identifier}
-                title={info.title}
-                price={info.price}
-                period={info.trial ? `${info.trial}, then ${info.period}` : info.period}
-                features={
-                  info.trial
-                    ? [info.trial, "Cancel any time"]
-                    : info.period === "one-time"
-                      ? ["One-time purchase", "Yours forever"]
-                      : ["Cancel any time"]
-                }
-                badge={info.badge}
-                selected={selectedId === pkg.identifier}
-                onPress={() => setSelectedId(pkg.identifier)}
+                key={plan.key}
+                title={meta.title}
+                price={price}
+                period={planPeriod(plan)}
+                features={planFeatures(plan)}
+                badge={meta.badge}
+                selected={selectedKey === plan.key}
+                onPress={() => setSelectedKey(plan.key)}
               />
             );
           })}
         </View>
+      ) : plans === null ? (
+        <View style={styles.emptyPlans}>
+          <Text style={[type.bodyMuted, styles.emptyText]}>Loading plans…</Text>
+        </View>
       ) : (
         <View style={styles.emptyPlans}>
           <Text style={[type.bodyMuted, styles.emptyText]}>
-            Plans couldn't be loaded. Check your connection and tap refresh.
+            Plans couldn’t be loaded. Check your connection and tap refresh.
           </Text>
         </View>
       )}
@@ -206,8 +210,8 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xxl,
   },
   featureRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
+    flexDirection: 'row',
+    alignItems: 'flex-start',
     gap: spacing.md,
   },
   featureText: {
@@ -220,10 +224,10 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xl,
   },
   emptyText: {
-    textAlign: "center",
+    textAlign: 'center',
   },
   linkRow: {
-    alignItems: "center",
+    alignItems: 'center',
     paddingVertical: spacing.sm,
   },
   link: {
@@ -234,7 +238,7 @@ const styles = StyleSheet.create({
   },
   footerNote: {
     marginTop: spacing.sm,
-    textAlign: "center",
+    textAlign: 'center',
     color: colors.mutedText,
   },
 });

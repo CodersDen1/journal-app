@@ -34,21 +34,25 @@ type InsightDigest struct {
 	RelatedEntryIds []string `json:"relatedEntryIds" firestore:"relatedEntryIds"`
 }
 
-// Entitlement is the user's resolved subscription access, derived from
-// RevenueCat. It is the server's source of truth for gating and is written only
-// by the RevenueCat webhook and server-side REST verification — never by the
-// client. It is stored separately from ProfileSettings so a profile write can
-// never grant access.
+// Entitlement is the user's resolved subscription access, derived from Stripe.
+// It is the server's source of truth for gating and is written only by the
+// Stripe webhook and server-side REST verification — never by the client. It is
+// stored separately from ProfileSettings so a profile write can never grant
+// access.
 type Entitlement struct {
 	Active     bool   `json:"active" firestore:"active"`         // any active "pro" access, including a free trial
-	ProductID  string `json:"productId" firestore:"productId"`   // e.g. "still_pro_monthly"
-	Store      string `json:"store" firestore:"store"`           // "app_store" | "play_store" | ""
-	PeriodType string `json:"periodType" firestore:"periodType"` // "trial" | "intro" | "normal" | ""
-	ExpiresAt  string `json:"expiresAt" firestore:"expiresAt"`   // RFC3339, or "" when unknown/non-expiring
+	ProductID  string `json:"productId" firestore:"productId"`   // Stripe price id, e.g. "price_123"
+	Store      string `json:"store" firestore:"store"`           // "stripe" | ""
+	PeriodType string `json:"periodType" firestore:"periodType"` // Stripe subscription status, e.g. "active" | "trialing" | ""
+	ExpiresAt  string `json:"expiresAt" firestore:"expiresAt"`   // RFC3339 of current period end, or "" when unknown
 	WillRenew  bool   `json:"willRenew" firestore:"willRenew"`
 	IsTrial    bool   `json:"isTrial" firestore:"isTrial"`
 	UpdatedAt  string `json:"updatedAt" firestore:"updatedAt"` // RFC3339 of the last resolution
-	Source     string `json:"source" firestore:"source"`       // "webhook" | "api" | "none"
+	Source     string `json:"source" firestore:"source"`       // "webhook" | "api" | "none" | "disabled" | "internal"
+	// StripeCustomerID links the user to their Stripe customer so the billing
+	// portal and live verification can find their subscriptions. Never "" once a
+	// checkout has completed.
+	StripeCustomerID string `json:"stripeCustomerId" firestore:"stripeCustomerId"`
 }
 
 // ProfileSettings holds the user's account and app preferences.

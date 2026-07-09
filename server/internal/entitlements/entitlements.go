@@ -1,10 +1,11 @@
 // Package entitlements resolves and caches a user's subscription entitlement.
 //
-// It is the single source the API gate consults. Resolution combines three
-// layers, in order of authority: an authoritative RevenueCat REST lookup, the
-// webhook-maintained value in the store, and a short-lived in-memory cache in
-// front of both. When enforcement is disabled (local development without
-// RevenueCat) every user is treated as entitled.
+// It is the single source the API gate consults. Stripe webhooks are the
+// authoritative signal: they write the entitlement into the store as they
+// happen. Reads serve that stored value behind a short-lived in-memory cache; a
+// forced refresh additionally re-reads the customer's subscriptions live from
+// Stripe. When enforcement is disabled (local dev without Stripe) every user is
+// treated as entitled.
 package entitlements
 
 import (
@@ -16,8 +17,8 @@ import (
 
 	"still/server/internal/auth"
 	"still/server/internal/model"
-	"still/server/internal/revenuecat"
 	"still/server/internal/store"
+	"still/server/internal/stripe"
 )
 
 // defaultTTL is how long a resolved entitlement stays fresh in the in-memory
@@ -32,7 +33,7 @@ type cacheEntry struct {
 // Service resolves entitlements for the API layer.
 type Service struct {
 	store    store.Store
-	rc       *revenuecat.Client
+	stripe   *stripe.Client
 	enforced bool
 	ttl      time.Duration
 	bypass   map[string]bool // verified email domains that always have full access
@@ -45,14 +46,14 @@ type Service struct {
 // and Get/Refresh report an active ("disabled") entitlement so the client gate
 // opens — this preserves the zero-setup local dev workflow. bypassDomains are
 // verified email domains (e.g. internal company accounts) granted full access.
-func New(s store.Store, rc *revenuecat.Client, enforced bool, bypassDomains []string) *Service {
+func New(s store.Store, sc *stripe.Client, enforced bool, bypassDomains []string) *Service {
 	bypass := make(map[string]bool, len(bypassDomains))
 	for _, d := range bypassDomains {
 		bypass[strings.ToLower(strings.TrimSpace(d))] = true
 	}
 	return &Service{
 		store:    s,
-		rc:       rc,
+		stripe:   sc,
 		enforced: enforced,
 		ttl:      defaultTTL,
 		bypass:   bypass,
@@ -100,9 +101,9 @@ func (s *Service) Get(ctx context.Context, uid string) (model.Entitlement, error
 	return s.resolve(ctx, uid, false)
 }
 
-// Refresh forces an authoritative re-resolution (bypassing the cache), persists
-// it, and returns it. The client calls this right after a purchase/restore, and
-// the webhook calls it on every event.
+// Refresh forces an authoritative re-resolution (bypassing the cache and,
+// when possible, re-reading live from Stripe), persists it, and returns it. The
+// client calls this after a checkout/portal visit; the webhook calls it too.
 func (s *Service) Refresh(ctx context.Context, uid string) (model.Entitlement, error) {
 	if !s.enforced {
 		return disabledOverride(), nil
@@ -120,9 +121,10 @@ func (s *Service) Invalidate(uid string) {
 	s.mu.Unlock()
 }
 
-// resolve returns the user's entitlement using cache → RevenueCat REST → store,
-// failing closed (inactive) when nothing authoritative is available. When force
-// is true the cache is skipped.
+// resolve returns the user's entitlement. The webhook-maintained store value is
+// the base; a forced refresh additionally re-reads the customer's subscriptions
+// live from Stripe (when the Stripe customer is known) and persists the result.
+// It fails closed (inactive) when nothing is recorded.
 func (s *Service) resolve(ctx context.Context, uid string, force bool) (model.Entitlement, error) {
 	if !force {
 		if ent, ok := s.cached(uid); ok {
@@ -130,32 +132,34 @@ func (s *Service) resolve(ctx context.Context, uid string, force bool) (model.En
 		}
 	}
 
-	// 1. Authoritative: RevenueCat REST API.
-	if s.rc != nil && s.rc.Configured() {
-		ent, err := s.rc.FetchEntitlement(ctx, uid)
-		if err == nil {
-			if serr := s.store.SaveEntitlement(ctx, uid, ent); serr != nil {
-				log.Printf("entitlements: persist %s: %v", uid, serr)
-			}
-			s.put(uid, ent)
-			return ent, nil
-		}
-		// Transport/HTTP failure: fall back to the webhook-maintained value.
-		log.Printf("entitlements: revenuecat lookup %s failed, falling back to store: %v", uid, err)
-	}
-
-	// 2. Webhook-maintained value in the store.
-	ent, found, err := s.store.Entitlement(ctx, uid)
+	stored, found, err := s.store.Entitlement(ctx, uid)
 	if err != nil {
 		// Store failure with no authoritative answer: fail closed.
 		return model.Entitlement{Active: false, Source: "none"}, err
 	}
-	if found {
-		s.put(uid, ent)
-		return ent, nil
+
+	// Forced refresh: re-verify live against Stripe when we know the customer.
+	// Lifetime (one-time) purchases have no subscription to list, so a live
+	// lookup would wrongly report inactive — skip it and keep the stored grant.
+	if force && s.stripe != nil && s.stripe.Configured() && stored.StripeCustomerID != "" && stored.PeriodType != "lifetime" {
+		live, lerr := s.stripe.FetchEntitlementByCustomer(ctx, stored.StripeCustomerID)
+		if lerr == nil {
+			live.StripeCustomerID = stored.StripeCustomerID
+			if serr := s.store.SaveEntitlement(ctx, uid, live); serr != nil {
+				log.Printf("entitlements: persist %s: %v", uid, serr)
+			}
+			s.put(uid, live)
+			return live, nil
+		}
+		log.Printf("entitlements: stripe live lookup %s failed, using stored value: %v", uid, lerr)
 	}
 
-	// 3. Nothing recorded anywhere → inactive (fail closed).
+	if found {
+		s.put(uid, stored)
+		return stored, nil
+	}
+
+	// Nothing recorded anywhere → inactive (fail closed).
 	inactive := model.Entitlement{Active: false, Source: "none", UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 	s.put(uid, inactive)
 	return inactive, nil

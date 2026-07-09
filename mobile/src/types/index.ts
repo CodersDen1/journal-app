@@ -45,21 +45,41 @@ export type Plan = 'free' | 'pro';
 export type EntryMode = 'text' | 'voice';
 
 /**
- * Subscription entitlement resolved by the backend from RevenueCat. This is the
+ * Subscription entitlement resolved by the backend from Stripe. This is the
  * authoritative access signal — mirrors the server's model.Entitlement.
  */
 export interface Entitlement {
   /** Whether the user currently has active "pro" access (including a free trial). */
   active: boolean;
+  /** Stripe price id, e.g. "price_123". */
   productId: string;
+  /** "stripe" | "". */
   store: string;
+  /** Stripe subscription status, e.g. "active" | "trialing" | "". */
   periodType: string;
-  /** ISO-8601 expiry, or "" when unknown/non-expiring. */
+  /** ISO-8601 current-period end, or "" when unknown/non-expiring. */
   expiresAt: string;
   willRenew: boolean;
   isTrial: boolean;
   updatedAt: string;
   source: string;
+  /** Stripe customer id; "" until a checkout has completed. */
+  stripeCustomerId: string;
+}
+
+export type BillingPlanKey = 'monthly' | 'yearly' | 'lifetime';
+
+/** A purchasable plan with its live Stripe price (from GET /api/billing/plans). */
+export interface BillingPlan {
+  key: BillingPlanKey;
+  /** "subscription" (recurring) or "payment" (one-time, e.g. lifetime). */
+  mode: 'subscription' | 'payment';
+  priceId: string;
+  /** Amount in the currency's smallest unit (e.g. cents); 0 when unavailable. */
+  amount: number;
+  currency: string;
+  /** "month" | "year" for subscriptions; "" for one-time. */
+  interval: string;
 }
 export type ReminderRhythm = 'off' | 'daily' | 'weekdays' | 'weekends' | 'custom';
 
