@@ -25,7 +25,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { AppShell, IconButton, PrimaryButton, ScreenHeader, SegmentedControl } from '../components';
+import { AppShell, ConfirmModal, IconButton, PrimaryButton, ScreenHeader, SegmentedControl } from '../components';
 import { api } from '../lib/api';
 import { formatDuration, formatWeekdayMonthDay } from '../lib/format';
 import { pickImages } from '../lib/media';
@@ -71,8 +71,6 @@ export function CreateJournalScreen() {
   const [transcript, setTranscript] = useState(existing?.transcript ?? '');
   const [transcribeEnabled, setTranscribeEnabled] = useState(true);
   const [status, setStatus] = useState<TranscriptStatus>(existing?.transcript ? 'done' : 'idle');
-  // Show an existing transcript by default (don't hide it behind "Read text").
-  const [showTranscript, setShowTranscript] = useState(Boolean(existing?.transcript));
   const [errorText, setErrorText] = useState('');
   // Mark an already-transcribed recording as attempted so opening the entry for
   // editing never re-transcribes it.
@@ -102,7 +100,6 @@ export function CreateJournalScreen() {
       const result = await api.transcribe(uri);
       setTranscript(result);
       setStatus('done');
-      setShowTranscript(true); // reveal the transcript as soon as it's ready
     } catch (err) {
       const message = err instanceof Error ? err.message : '';
       console.warn('[transcribe] failed:', message);
@@ -166,7 +163,6 @@ export function CreateJournalScreen() {
     setTranscript('');
     setStatus('idle');
     setErrorText('');
-    setShowTranscript(false);
     setPhase('idle');
   };
 
@@ -187,35 +183,58 @@ export function CreateJournalScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
-  // Warn before navigating away mid-recording: block the leave, confirm, and
-  // only then discard + proceed. Guarded on 'recording' so it never interferes
-  // with saving (which happens from the 'recorded' phase). leavingRef prevents
-  // the re-dispatched navigation from re-triggering the prompt.
+  // A themed discard confirmation shared by the leave paths — navigating away
+  // and switching Voice → Text — so an in-progress recording is never lost
+  // silently. requestDiscard stashes what to do next; confirmDiscard stops the
+  // recorder, resets, and runs it.
+  const [discardVisible, setDiscardVisible] = useState(false);
+  const pendingProceed = useRef<(() => void) | null>(null);
   const leavingRef = useRef(false);
+
+  const requestDiscard = (proceed: () => void) => {
+    pendingProceed.current = proceed;
+    setDiscardVisible(true);
+  };
+  const cancelDiscard = () => {
+    pendingProceed.current = null;
+    setDiscardVisible(false);
+  };
+  const confirmDiscard = () => {
+    setDiscardVisible(false);
+    recorder.stop().catch(() => undefined);
+    void setAudioModeAsync({ allowsRecording: false });
+    resetRecording();
+    const proceed = pendingProceed.current;
+    pendingProceed.current = null;
+    proceed?.();
+  };
+
+  // Block navigating away mid-recording until the user confirms. Guarded on
+  // 'recording' so it never interferes with saving (from the 'recorded' phase);
+  // leavingRef lets the re-dispatched navigation through without re-prompting.
   useEffect(() => {
     const unsub = navigation.addListener('beforeRemove', (e) => {
       if (phase !== 'recording' || leavingRef.current) return;
       e.preventDefault();
-      Alert.alert(
-        'Discard recording?',
-        'You’re still recording. If you leave now, this recording will be discarded.',
-        [
-          { text: 'Keep recording', style: 'cancel' },
-          {
-            text: 'Discard & leave',
-            style: 'destructive',
-            onPress: () => {
-              leavingRef.current = true;
-              recorder.stop().catch(() => undefined);
-              void setAudioModeAsync({ allowsRecording: false });
-              navigation.dispatch(e.data.action);
-            },
-          },
-        ],
-      );
+      requestDiscard(() => {
+        leavingRef.current = true;
+        navigation.dispatch(e.data.action);
+      });
     });
     return unsub;
-  }, [navigation, phase, recorder]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigation, phase]);
+
+  // Switching Voice → Text while actively recording would abandon the take (and
+  // leave the mic running), so confirm first — same discard rule as leaving.
+  const handleModeChange = (next: Mode) => {
+    if (next === mode) return;
+    if (mode === 'voice' && phase === 'recording') {
+      requestDiscard(() => setMode(next));
+      return;
+    }
+    setMode(next);
+  };
 
   const togglePlay = () => {
     if (!audioUri) return;
@@ -270,32 +289,7 @@ export function CreateJournalScreen() {
   if (mode === 'text') {
     footer = <PrimaryButton label="Save journal" onPress={save} disabled={!canSaveText} />;
   } else if (phase === 'recorded') {
-    footer = (
-      <View style={styles.voiceFooter}>
-        <PrimaryButton
-          label={playerStatus.playing ? 'Pause' : 'Play'}
-          variant="secondary"
-          onPress={togglePlay}
-          fullWidth={false}
-          style={styles.footerBtn}
-          icon={
-            <Ionicons
-              name={playerStatus.playing ? 'pause' : 'play'}
-              size={16}
-              color={colors.primaryDark}
-            />
-          }
-        />
-        <PrimaryButton
-          label="Read text"
-          variant="secondary"
-          onPress={() => setShowTranscript((v) => !v)}
-          fullWidth={false}
-          style={styles.footerBtn}
-        />
-        <PrimaryButton label="Save" onPress={save} fullWidth={false} style={styles.footerSave} />
-      </View>
-    );
+    footer = <PrimaryButton label="Save journal" onPress={save} />;
   }
 
   // When there is no footer button (voice, before recording), keep the bottom
@@ -316,6 +310,7 @@ export function CreateJournalScreen() {
   );
 
   return (
+    <>
     <AppShell header={header} footer={footer} scroll={scroll} scrollRef={scrollRef}>
       <View style={styles.segment}>
         <SegmentedControl
@@ -324,7 +319,7 @@ export function CreateJournalScreen() {
             { label: 'Voice', value: 'voice' },
           ]}
           value={mode}
-          onChange={(v) => setMode(v as Mode)}
+          onChange={(v) => handleModeChange(v as Mode)}
         />
       </View>
 
@@ -390,14 +385,25 @@ export function CreateJournalScreen() {
               <View style={styles.recordedHead}>
                 <Text style={styles.timer}>{formatDuration(finalDuration)}</Text>
                 <Text style={[type.label, styles.completeText]}>Recording complete</Text>
-                <View style={styles.wave}>
-                  {WAVE_BARS.map((h, i) => (
-                    <View key={i} style={[styles.waveBar, { height: h }]} />
-                  ))}
-                </View>
-                <Pressable onPress={resetRecording} style={styles.reRecord} accessibilityRole="button">
-                  <Ionicons name="refresh" size={16} color={colors.primaryDark} />
-                  <Text style={[type.caption, styles.reRecordText]}>Record again</Text>
+                {/* Tap the waveform to play/pause the recording. */}
+                <Pressable
+                  onPress={togglePlay}
+                  accessibilityRole="button"
+                  accessibilityLabel={playerStatus.playing ? 'Pause recording' : 'Play recording'}
+                  style={({ pressed }) => [styles.player, pressed && styles.playerPressed]}
+                >
+                  <View style={styles.playButton}>
+                    <Ionicons
+                      name={playerStatus.playing ? 'pause' : 'play'}
+                      size={22}
+                      color={colors.onPrimary}
+                    />
+                  </View>
+                  <View style={[styles.wave, styles.waveFill]}>
+                    {WAVE_BARS.map((h, i) => (
+                      <View key={i} style={[styles.waveBar, { height: h }]} />
+                    ))}
+                  </View>
                 </Pressable>
               </View>
 
@@ -420,19 +426,18 @@ export function CreateJournalScreen() {
                   </Pressable>
                 ) : null}
 
-                {showTranscript ? (
-                  <TextInput
-                    value={transcript}
-                    onChangeText={setTranscript}
-                    multiline
-                    onFocus={() =>
-                      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 250)
-                    }
-                    placeholder="Add or edit the transcript"
-                    placeholderTextColor={colors.mutedText}
-                    style={[type.body, styles.transcriptInput]}
-                  />
-                ) : null}
+                {/* Transcript stays visible the whole time (editable). */}
+                <TextInput
+                  value={transcript}
+                  onChangeText={setTranscript}
+                  multiline
+                  onFocus={() =>
+                    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 250)
+                  }
+                  placeholder="Add or edit the transcript"
+                  placeholderTextColor={colors.mutedText}
+                  style={[type.body, styles.transcriptInput]}
+                />
 
                 <PhotoRow
                   photos={photos}
@@ -447,6 +452,19 @@ export function CreateJournalScreen() {
         </View>
       )}
     </AppShell>
+
+      <ConfirmModal
+        visible={discardVisible}
+        destructive
+        icon="mic-off-outline"
+        title="Discard recording?"
+        message="You’re still recording. If you continue, this recording will be discarded."
+        confirmLabel="Discard recording"
+        cancelLabel="Keep recording"
+        onConfirm={confirmDiscard}
+        onCancel={cancelDiscard}
+      />
+    </>
   );
 }
 
@@ -563,10 +581,29 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.85 },
   stopIcon: { width: 28, height: 28, borderRadius: 6, backgroundColor: colors.onPrimary },
   completeText: { marginTop: spacing.xs, color: colors.primaryDark },
-  wave: { flexDirection: 'row', alignItems: 'center', height: 56, gap: 4, marginTop: spacing.xl },
+  player: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'stretch',
+    gap: spacing.md,
+    marginTop: spacing.xl,
+    backgroundColor: colors.softSurface,
+    borderRadius: radius.lg,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+  },
+  playerPressed: { opacity: 0.85 },
+  playButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  wave: { flexDirection: 'row', alignItems: 'center', height: 56, gap: 4 },
+  waveFill: { flex: 1, justifyContent: 'center' },
   waveBar: { width: 4, borderRadius: 2, backgroundColor: colors.recording },
-  reRecord: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, marginTop: spacing.xl },
-  reRecordText: { color: colors.primaryDark },
   voiceBottom: { gap: spacing.md, paddingBottom: spacing.sm },
 
   // Transcribe toggle
@@ -618,9 +655,4 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.surface,
   },
-
-  // Footer
-  voiceFooter: { flexDirection: 'row', gap: spacing.sm },
-  footerBtn: { flex: 1, paddingHorizontal: spacing.md },
-  footerSave: { flex: 1.3 },
 });

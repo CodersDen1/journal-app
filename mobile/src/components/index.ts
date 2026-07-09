@@ -17,3 +17,4 @@ export { SettingRow } from './SettingRow';
 export { PlanCard } from './PlanCard';
 export { UndoSnackbar } from './UndoSnackbar';
 export { CalendarSheet } from './CalendarSheet';
+export { ConfirmModal } from './ConfirmModal';
