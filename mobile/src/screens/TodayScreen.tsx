@@ -7,7 +7,7 @@ import {
   useAudioRecorderState,
 } from 'expo-audio';
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Animated, Easing, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { AppShell, IconButton } from '../components';
 import { entryPreview, formatDuration, formatFullDate, formatTime, greetingForNow } from '../lib/format';
@@ -17,8 +17,6 @@ import { useProfile } from '../state/ProfileContext';
 import { colors, fonts, radius, shadow, spacing, type } from '../theme';
 import type { JournalEntry } from '../types';
 
-/** Ignore accidental taps shorter than this (seconds). */
-const MIN_HOLD_SECONDS = 0.6;
 
 function sameDay(a: Date, b: Date): boolean {
   return (
@@ -50,6 +48,19 @@ export function TodayScreen() {
   const recorderState = useAudioRecorderState(recorder, 250);
   const [recording, setRecording] = useState(false);
   const recordingRef = useRef(false);
+  // True while the button is physically held. Set synchronously so the async
+  // startHold can detect an early release (a quick tap) and abort before the mic
+  // starts — otherwise the tap orphans a background recording that keeps the
+  // timer running when you come back to this screen.
+  const heldRef = useRef(false);
+  // Wall-clock start of the actual recording, for a reliable hold duration
+  // (recorderState can lag the release).
+  const recordStartRef = useRef(0);
+  // Hands-free "lock": holding past 3s locks recording so you can release your
+  // finger; a Stop button then ends it. lockedRef mirrors state for handlers.
+  const [locked, setLocked] = useState(false);
+  const lockedRef = useRef(false);
+  const LOCK_AFTER_MS = 3000;
 
   const liveDuration = (recorderState.durationMillis ?? 0) / 1000;
   const now = new Date();
@@ -64,8 +75,77 @@ export function TodayScreen() {
   const openVoice = () => navigation.navigate('CreateJournal', { mode: 'voice' });
   const openText = () => navigation.navigate('CreateJournal', { mode: 'text' });
 
+  // ---- animations (transform/opacity only, native driver — Fabric-safe) ----
+  // Staggered spring entrance for the two capture cards.
+  const enterVoice = useRef(new Animated.Value(0)).current;
+  const enterWrite = useRef(new Animated.Value(0)).current;
+  // Press feedback scale for each card.
+  const pressVoice = useRef(new Animated.Value(1)).current;
+  const pressWrite = useRef(new Animated.Value(1)).current;
+  // Gentle looping pulse on the mic while recording.
+  const pulse = useRef(new Animated.Value(0)).current;
+  // Lock badge entrance when recording locks hands-free.
+  const lockAnim = useRef(new Animated.Value(0)).current;
+  // 0→1 over the hold-to-lock window; drives the "charging" ring around the card.
+  const lockProgress = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.stagger(110, [
+      Animated.spring(enterVoice, { toValue: 1, useNativeDriver: true, stiffness: 150, damping: 15, mass: 1 }),
+      Animated.spring(enterWrite, { toValue: 1, useNativeDriver: true, stiffness: 150, damping: 15, mass: 1 }),
+    ]).start();
+  }, [enterVoice, enterWrite]);
+
+  useEffect(() => {
+    if (!recording) {
+      pulse.stopAnimation();
+      pulse.setValue(0);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1, duration: 700, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0, duration: 700, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [recording, pulse]);
+
+  const springTo = (v: Animated.Value, toValue: number) =>
+    Animated.spring(v, { toValue, useNativeDriver: true, stiffness: 320, damping: 22, mass: 1 }).start();
+
+  // Entrance + press transform for a card.
+  const cardAnim = (enter: Animated.Value, press: Animated.Value) => ({
+    opacity: enter,
+    transform: [
+      { translateY: enter.interpolate({ inputRange: [0, 1], outputRange: [28, 0] }) },
+      { scale: enter.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1] }) },
+      { scale: press },
+    ],
+  });
+
+  const micScale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.12] });
+
+  // Lock badge drops in with a little rotate + scale when recording locks.
+  const lockBadgeStyle = {
+    opacity: lockAnim,
+    transform: [
+      { scale: lockAnim.interpolate({ inputRange: [0, 1], outputRange: [0.3, 1] }) },
+      { rotate: lockAnim.interpolate({ inputRange: [0, 1], outputRange: ['-35deg', '0deg'] }) },
+    ],
+  };
+
+  // "Charging" ring: converges onto the card + brightens as the hold approaches
+  // the lock, then snaps on. Communicates "keep holding to lock in".
+  const lockRingStyle = {
+    opacity: lockProgress.interpolate({ inputRange: [0, 0.08, 1], outputRange: [0, 0.6, 1] }),
+    transform: [{ scale: lockProgress.interpolate({ inputRange: [0, 1], outputRange: [1.16, 1] }) }],
+  };
+
   useEffect(() => {
     return () => {
+      lockProgress.stopAnimation();
       recorder.stop().catch(() => undefined);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -73,31 +153,62 @@ export function TodayScreen() {
 
   // Press-and-hold to record; release hands the clip to the voice composer.
   const startHold = async () => {
+    heldRef.current = true;
     try {
       const permission = await AudioModule.requestRecordingPermissionsAsync();
       if (!permission.granted) {
+        heldRef.current = false;
         Alert.alert('Microphone needed', 'Allow microphone access to record a voice entry.');
         return;
       }
+      if (!heldRef.current) return; // released during the permission prompt
       await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
       await recorder.prepareToRecordAsync();
+      if (!heldRef.current) {
+        // Released before recording began — undo the session, never start the mic.
+        await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
+        return;
+      }
       recorder.record();
+      recordStartRef.current = Date.now();
       recordingRef.current = true;
       setRecording(true);
+      // Arm the hands-free lock: the ring "charges" over LOCK_AFTER_MS and, when
+      // it completes, locks recording — visual and lock stay perfectly in sync.
+      lockProgress.setValue(0);
+      Animated.timing(lockProgress, {
+        toValue: 1,
+        duration: LOCK_AFTER_MS,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (!finished || !recordingRef.current || lockedRef.current) return;
+        lockedRef.current = true;
+        setLocked(true);
+        Animated.spring(lockAnim, {
+          toValue: 1,
+          useNativeDriver: true,
+          stiffness: 220,
+          damping: 12,
+          mass: 1,
+        }).start();
+      });
     } catch {
       recordingRef.current = false;
       setRecording(false);
     }
   };
 
-  const endHold = async () => {
-    // Released before recording actually began (quick tap / permission prompt):
-    // fall back to the full voice composer so the tap still does something.
-    if (!recordingRef.current) {
-      openVoice();
-      return;
-    }
-    const duration = liveDuration;
+  // Cancel the lock countdown (finger lifted before locking, or recording ended).
+  const stopLockCountdown = () => {
+    lockProgress.stopAnimation();
+    lockProgress.setValue(0);
+  };
+
+  // Stop the (locked) recording and hand the clip to the voice composer.
+  const stopLockedRecording = async () => {
+    stopLockCountdown();
+    const elapsed = recordStartRef.current ? (Date.now() - recordStartRef.current) / 1000 : liveDuration;
     let uri: string | null = null;
     try {
       await recorder.stop();
@@ -107,16 +218,59 @@ export function TodayScreen() {
     }
     await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
     recordingRef.current = false;
+    recordStartRef.current = 0;
+    lockedRef.current = false;
     setRecording(false);
-
-    if (uri && duration >= MIN_HOLD_SECONDS) {
+    setLocked(false);
+    lockAnim.setValue(0);
+    if (uri) {
       navigation.navigate('CreateJournal', {
         mode: 'voice',
         audioUri: uri,
-        audioDuration: Math.round(duration),
+        audioDuration: Math.max(1, Math.round(elapsed)),
       });
     } else {
-      openVoice(); // too short to keep — let them record on the composer
+      openVoice();
+    }
+  };
+
+  const endHold = async () => {
+    heldRef.current = false;
+    // Once locked, lifting the finger does nothing — recording is hands-free
+    // and only the Stop button ends it.
+    if (lockedRef.current) return;
+    stopLockCountdown();
+    // Released before recording actually began (quick tap / still preparing):
+    // fall back to the full voice composer so the tap still does something. The
+    // in-flight startHold sees heldRef=false and aborts without starting the mic.
+    if (!recordingRef.current) {
+      openVoice();
+      return;
+    }
+    // Measure the hold from a wall-clock stamp — recorderState can lag release.
+    const elapsed = recordStartRef.current ? (Date.now() - recordStartRef.current) / 1000 : liveDuration;
+    let uri: string | null = null;
+    try {
+      await recorder.stop();
+      uri = recorder.uri ?? null;
+    } catch {
+      // fall through
+    }
+    await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined);
+    recordingRef.current = false;
+    recordStartRef.current = 0;
+    setRecording(false);
+
+    // A recording happened → hand the clip to the composer, already loaded. Only
+    // a tap that never armed the mic (handled above) opens an empty composer.
+    if (uri) {
+      navigation.navigate('CreateJournal', {
+        mode: 'voice',
+        audioUri: uri,
+        audioDuration: Math.max(1, Math.round(elapsed)),
+      });
+    } else {
+      openVoice();
     }
   };
 
@@ -149,42 +303,94 @@ export function TodayScreen() {
 
       <Text style={styles.prompt}>What do you want to capture today?</Text>
 
-      <View style={styles.captureArea}>
-        <View style={styles.micWrap}>
-          <View style={[styles.glow, recording && styles.glowActive]} />
-          <Pressable
-            onPressIn={startHold}
-            onPressOut={endHold}
-            delayLongPress={10000}
-            accessibilityRole="button"
-            accessibilityLabel="Hold to record a voice entry"
-            style={({ pressed }) => [
-              styles.micButton,
-              recording && styles.micButtonRecording,
-              pressed && !recording && styles.pressed,
-            ]}
-          >
-            {recording ? (
-              <>
-                <Text style={styles.recTimer}>{formatDuration(liveDuration)}</Text>
-                <Text style={styles.micLabel}>RELEASE TO SAVE</Text>
-              </>
-            ) : (
-              <>
-                <Ionicons name="mic" size={34} color={colors.onPrimary} />
-                <Text style={styles.micLabel}>HOLD TO SPEAK</Text>
-              </>
-            )}
-          </Pressable>
-        </View>
-
-        <Pressable
-          onPress={openText}
-          accessibilityRole="button"
-          style={({ pressed }) => [styles.writeInstead, pressed && styles.pressedText]}
+      <View style={styles.cardsRow}>
+        {/* Voice — hold to record; hold past 3s locks it hands-free. */}
+        <Animated.View
+          style={[
+            styles.card,
+            recording ? styles.voiceCardRecording : styles.voiceCard,
+            cardAnim(enterVoice, pressVoice),
+          ]}
         >
-          <Text style={styles.writeInsteadText}>Write instead</Text>
-        </Pressable>
+          {recording && !locked ? (
+            <Animated.View style={[styles.lockRing, lockRingStyle]} pointerEvents="none" />
+          ) : null}
+
+          {locked ? (
+            <Animated.View style={[styles.lockBadge, lockBadgeStyle]} pointerEvents="none">
+              <Ionicons name="lock-closed" size={13} color={colors.onPrimary} />
+            </Animated.View>
+          ) : null}
+
+          {locked ? (
+            // Locked: hands-free recording with a live waveform + Stop button.
+            <View style={styles.lockedInner}>
+              <Text style={styles.recTimer}>{formatDuration(liveDuration)}</Text>
+              <RecordingWave color={colors.onPrimary} />
+              <Pressable
+                onPress={stopLockedRecording}
+                accessibilityRole="button"
+                accessibilityLabel="Stop recording and save"
+                style={({ pressed }) => [styles.stopBtn, pressed && styles.pressed]}
+              >
+                <View style={styles.stopSquare} />
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable
+              onPressIn={() => {
+                springTo(pressVoice, 0.95);
+                void startHold();
+              }}
+              onPressOut={() => {
+                springTo(pressVoice, 1);
+                void endHold();
+              }}
+              delayLongPress={10000}
+              accessibilityRole="button"
+              accessibilityLabel="Hold to record a voice entry"
+              style={styles.cardInner}
+            >
+              <Animated.View style={[styles.cardIcon, { transform: [{ scale: micScale }] }]}>
+                <Ionicons name="mic" size={26} color={colors.onPrimary} />
+              </Animated.View>
+              <View style={styles.cardTextBlock}>
+                {recording ? (
+                  <>
+                    <Text style={styles.cardTitle}>{formatDuration(liveDuration)}</Text>
+                    <Text style={styles.cardSubtitle}>HOLD TO LOCK</Text>
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.cardTitle}>Voice</Text>
+                    <Text style={styles.cardSubtitle}>Hold to speak</Text>
+                  </>
+                )}
+              </View>
+            </Pressable>
+          )}
+        </Animated.View>
+
+        {/* Write — tap to open the text composer. */}
+        <Animated.View style={[styles.card, styles.writeCard, cardAnim(enterWrite, pressWrite)]}>
+          <Pressable
+            onPressIn={() => springTo(pressWrite, 0.95)}
+            onPressOut={() => springTo(pressWrite, 1)}
+            onPress={openText}
+            disabled={recording}
+            accessibilityRole="button"
+            accessibilityLabel="Write a journal entry"
+            style={styles.cardInner}
+          >
+            <View style={styles.cardIcon}>
+              <Ionicons name="create-outline" size={26} color={colors.onPrimary} />
+            </View>
+            <View style={styles.cardTextBlock}>
+              <Text style={styles.cardTitle}>Write</Text>
+              <Text style={styles.cardSubtitle}>Jot it down</Text>
+            </View>
+          </Pressable>
+        </Animated.View>
       </View>
 
       {todayEntries.length > 0 ? (
@@ -237,8 +443,33 @@ export function TodayScreen() {
   );
 }
 
-const MIC = 140;
-const GLOW = 216;
+/** A live, looping equalizer shown while a locked recording is in progress. */
+function RecordingWave({ color }: { color: string }) {
+  const bars = useRef(Array.from({ length: 11 }, () => new Animated.Value(0.35))).current;
+  useEffect(() => {
+    const loops = bars.map((b, i) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay((i % 5) * 80),
+          Animated.timing(b, { toValue: 1, duration: 300, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+          Animated.timing(b, { toValue: 0.35, duration: 300, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        ]),
+      ),
+    );
+    loops.forEach((l) => l.start());
+    return () => loops.forEach((l) => l.stop());
+  }, [bars]);
+  return (
+    <View style={styles.waveRow}>
+      {bars.map((b, i) => (
+        <Animated.View
+          key={i}
+          style={[styles.waveBar, { backgroundColor: color, transform: [{ scaleY: b }] }]}
+        />
+      ))}
+    </View>
+  );
+}
 
 const styles = StyleSheet.create({
   topRow: {
@@ -261,45 +492,109 @@ const styles = StyleSheet.create({
     maxWidth: 280,
   },
 
-  captureArea: { alignItems: 'center', marginTop: spacing.xxxl },
-  micWrap: {
-    width: GLOW,
-    height: GLOW,
-    alignItems: 'center',
-    justifyContent: 'center',
+  // Two-column capture cards
+  cardsRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    marginTop: spacing.xxl,
   },
-  glow: {
-    position: 'absolute',
-    width: GLOW,
-    height: GLOW,
-    borderRadius: GLOW / 2,
-    backgroundColor: colors.secondary,
-    opacity: 0.1,
-  },
-  glowActive: { backgroundColor: colors.recording, opacity: 0.2 },
-  micButton: {
-    width: MIC,
-    height: MIC,
-    borderRadius: MIC / 2,
-    backgroundColor: colors.secondary,
-    alignItems: 'center',
-    justifyContent: 'center',
+  card: {
+    flex: 1,
+    minHeight: 184,
+    borderRadius: radius.xl,
     ...shadow.floating,
   },
-  micButtonRecording: { backgroundColor: colors.recording },
+  voiceCard: { backgroundColor: colors.secondary },
+  voiceCardRecording: { backgroundColor: colors.recording },
+  writeCard: { backgroundColor: colors.primary },
   pressed: { opacity: 0.9 },
-  recTimer: { fontFamily: fonts.sansSemiBold, fontSize: 22, color: colors.onPrimary },
-  micLabel: {
-    ...type.overline,
-    color: colors.onPrimary,
-    marginTop: spacing.sm,
-    letterSpacing: 1,
+  cardInner: {
+    flex: 1,
+    padding: spacing.lg,
+    justifyContent: 'space-between',
   },
-  writeInstead: { marginTop: spacing.xl, paddingVertical: spacing.xs },
-  writeInsteadText: {
-    ...type.label,
-    color: colors.primaryDark,
-    textDecorationLine: 'underline',
+  cardIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(251, 248, 241, 0.22)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardTextBlock: { marginTop: spacing.lg },
+  cardTitle: {
+    fontFamily: fonts.sansSemiBold,
+    fontSize: 22,
+    lineHeight: 28,
+    color: colors.onPrimary,
+  },
+  cardSubtitle: {
+    ...type.caption,
+    color: colors.onPrimary,
+    opacity: 0.85,
+    marginTop: 2,
+    letterSpacing: 0.3,
+  },
+
+  // Locked hands-free recording panel (inside the voice card)
+  lockedInner: {
+    flex: 1,
+    padding: spacing.lg,
+    alignItems: 'center',
+    justifyContent: 'space-around',
+  },
+  lockRing: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: radius.xl,
+    borderWidth: 2.5,
+    borderColor: 'rgba(251, 248, 241, 0.9)',
+  },
+  lockBadge: {
+    position: 'absolute',
+    top: spacing.sm,
+    right: spacing.sm,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: 'rgba(251, 248, 241, 0.22)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2,
+  },
+  recTimer: {
+    fontFamily: fonts.sansSemiBold,
+    fontSize: 24,
+    color: colors.onPrimary,
+  },
+  waveRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 34,
+    gap: 3,
+  },
+  waveBar: {
+    width: 3,
+    height: 28,
+    borderRadius: 2,
+  },
+  stopBtn: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: 'rgba(251, 248, 241, 0.22)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stopSquare: {
+    width: 20,
+    height: 20,
+    borderRadius: 5,
+    backgroundColor: colors.onPrimary,
   },
 
   activityList: { marginTop: spacing.xxxl, gap: spacing.md },

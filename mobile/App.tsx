@@ -21,6 +21,7 @@ import { EntitlementProvider, useEntitlement } from './src/state/EntitlementCont
 import { JournalsProvider } from './src/state/JournalsContext';
 import { ProfileProvider } from './src/state/ProfileContext';
 import { SnackbarProvider } from './src/state/SnackbarContext';
+import { storage } from './src/lib/storage';
 import { colors } from './src/theme';
 
 const navigationTheme: Theme = {
@@ -46,9 +47,17 @@ const SPLASH_MIN_MS = 1500;
 function Shell({ fontsLoaded }: { fontsLoaded: boolean }) {
   const { user, initializing } = useAuth();
   const { status } = useEntitlement();
+  const [onboardingSeen, setOnboardingSeen] = useState<boolean | null>(null);
   const [minTimeDone, setMinTimeDone] = useState(false);
   const [splashMounted, setSplashMounted] = useState(true);
   const splashOpacity = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    void (async () => {
+      const seen = await storage.hasSeenOnboarding();
+      setOnboardingSeen(seen);
+    })();
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => setMinTimeDone(true), SPLASH_MIN_MS);
@@ -57,7 +66,11 @@ function Shell({ fontsLoaded }: { fontsLoaded: boolean }) {
 
   // Keep the splash up until entitlement resolves for a signed-in user, so the
   // paywall/app never flashes before the authoritative status is known.
-  const appReady = fontsLoaded && !initializing && (!user || status !== 'loading');
+  const appReady =
+    fontsLoaded &&
+    !initializing &&
+    (!user || status !== 'loading') &&
+    (user ? onboardingSeen !== null : true);
 
   useEffect(() => {
     if (appReady && minTimeDone && splashMounted) {
@@ -82,7 +95,7 @@ function Shell({ fontsLoaded }: { fontsLoaded: boolean }) {
       return (
         <NavigationContainer theme={navigationTheme}>
           <StatusBar style="dark" />
-          <RootNavigator />
+          <RootNavigator initialRouteName={onboardingSeen ? 'Tabs' : 'Onboarding'} />
         </NavigationContainer>
       );
     }

@@ -34,6 +34,36 @@ type InsightDigest struct {
 	RelatedEntryIds []string `json:"relatedEntryIds" firestore:"relatedEntryIds"`
 }
 
+// AskScope is the slice of the journal a question is asked against:
+// "week" | "month" | "all".
+type AskScope = string
+
+// AskMessage is one turn of an Ask conversation. Role is "user" or "assistant".
+// The client replays prior turns so follow-up questions ("and before that?")
+// resolve — the server keeps no conversation state.
+type AskMessage struct {
+	Role string `json:"role"`
+	Text string `json:"text"`
+}
+
+// AskCitation points at the entry an answer drew on. The server only ever emits
+// citations whose EntryID was in the prompt, so a hallucinated id cannot reach
+// the client.
+type AskCitation struct {
+	EntryID string `json:"entryId"`
+	Date    string `json:"date"`  // CreatedAt of the cited entry (RFC3339)
+	Quote   string `json:"quote"` // short excerpt the model leaned on
+}
+
+// AskAnswer is the reply to one question about the journal.
+type AskAnswer struct {
+	Answer      string        `json:"answer"`
+	Citations   []AskCitation `json:"citations"`
+	FollowUps   []string      `json:"followUps"`   // 2-3 natural next questions
+	EntriesUsed int           `json:"entriesUsed"` // entries in scope that reached the model
+	Truncated   bool          `json:"truncated"`   // the period held more entries than fit in one prompt
+}
+
 // Entitlement is the user's resolved subscription access, derived from Stripe.
 // It is the server's source of truth for gating and is written only by the
 // Stripe webhook and server-side REST verification — never by the client. It is

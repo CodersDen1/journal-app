@@ -67,12 +67,19 @@ export function InsightsScreen() {
       large
       right={
         enoughEntries && user ? (
-          <IconButton
-            name="refresh"
-            onPress={() => load(period, true)}
-            accessibilityLabel="Refresh insight"
-            disabled={loading}
-          />
+          <>
+            <IconButton
+              name="chatbubble-ellipses-outline"
+              onPress={() => navigation.navigate('Ask', { scope: period === 'weekly' ? 'week' : 'month' })}
+              accessibilityLabel="Ask about this period"
+            />
+            <IconButton
+              name="refresh"
+              onPress={() => load(period, true)}
+              accessibilityLabel="Refresh insight"
+              disabled={loading}
+            />
+          </>
         ) : undefined
       }
     />

@@ -91,11 +91,18 @@ export function JournalsScreen() {
       title="Journals"
       large
       right={
-        <IconButton
-          name="search-outline"
-          onPress={() => navigation.navigate('Search')}
-          accessibilityLabel="Search journals"
-        />
+        <>
+          <IconButton
+            name="sparkles-outline"
+            onPress={() => navigation.navigate('Ask')}
+            accessibilityLabel="Ask your journal"
+          />
+          <IconButton
+            name="search-outline"
+            onPress={() => navigation.navigate('Search')}
+            accessibilityLabel="Search journals"
+          />
+        </>
       }
     />
   );

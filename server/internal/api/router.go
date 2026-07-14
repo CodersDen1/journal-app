@@ -49,6 +49,8 @@ func NewRouter(s store.Store, g *gemini.Client, blobs *blob.Store, verifier auth
 	protected.HandleFunc("GET /api/insights", gate(a.getInsights))
 	protected.HandleFunc("POST /api/insights/generate", gate(a.generateInsights))
 
+	protected.HandleFunc("POST /api/ask", gate(a.ask))
+
 	protected.HandleFunc("GET /api/profile", gate(a.getProfile))
 	protected.HandleFunc("PUT /api/profile", gate(a.updateProfile))
 

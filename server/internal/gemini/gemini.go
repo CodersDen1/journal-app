@@ -63,6 +63,17 @@ func (c *Client) Configured() bool { return c.apiKey != "" }
 
 type genRequest struct {
 	Contents []content `json:"contents"`
+	// SystemInstruction carries persona/rules out of the user turn so a long
+	// entries block can't dilute them. Omitted when nil.
+	SystemInstruction *content `json:"systemInstruction,omitempty"`
+	// GenerationConfig is set only when a call needs it (e.g. JSON mode).
+	GenerationConfig *genConfig `json:"generationConfig,omitempty"`
+}
+
+type genConfig struct {
+	// ResponseMimeType "application/json" makes the model emit parseable JSON
+	// with no markdown fences.
+	ResponseMimeType string `json:"responseMimeType,omitempty"`
 }
 
 type content struct {
@@ -262,6 +273,171 @@ Entries:
 		RelatedEntryIds: relatedIDs(entries),
 	}
 	return digest, nil
+}
+
+// AskQuery is a single question asked against a slice of the journal.
+type AskQuery struct {
+	Question string
+	// PeriodLabel names the slice in the person's own terms, e.g. "this week"
+	// or "June 2026". It only shapes the wording of the answer.
+	PeriodLabel string
+	// Entries are the entries in scope, oldest first. The caller is responsible
+	// for scoping and capping them.
+	Entries []model.JournalEntry
+	// History is the prior turns of this conversation, oldest first, so
+	// follow-ups like "and before that?" resolve.
+	History []model.AskMessage
+}
+
+// askSystemPrompt keeps the persona and the grounding rules out of the user
+// turn, where a long entries block would dilute them.
+const askSystemPrompt = `You are the reflective voice of a private journal in a calm app called Still. The person is asking questions about their own entries, and you answer as a trusted companion who has read every one of them.
+
+Rules:
+- Ground every claim in the entries you are given. Never invent an event, a person, or a feeling that is not there.
+- If the entries do not answer the question, say so plainly and kindly, and mention what you did find instead.
+- Address the person as "you". Warm, plain, unhurried language.
+- No diagnoses, no clinical or therapeutic framing, no emojis, no flattery.
+- Be specific: name what they actually wrote, and when. Two to five sentences unless they ask for more.
+- Cite the entries you drew on, by their exact given id.`
+
+// Ask answers a question about the given entries and returns a grounded,
+// cited answer. Citations are validated against the entries that were actually
+// sent, so a hallucinated id can never reach the caller.
+func (c *Client) Ask(ctx context.Context, q AskQuery) (model.AskAnswer, error) {
+	if !c.Configured() {
+		return model.AskAnswer{}, ErrNotConfigured
+	}
+	if strings.TrimSpace(q.Question) == "" {
+		return model.AskAnswer{}, errors.New("gemini: empty question")
+	}
+
+	// Index the entries by id so citations can be checked and dated afterwards.
+	byID := make(map[string]model.JournalEntry, len(q.Entries))
+	var b strings.Builder
+	for _, e := range q.Entries {
+		body := strings.TrimSpace(e.Text)
+		if body == "" {
+			body = strings.TrimSpace(e.Transcript)
+		}
+		if body == "" {
+			continue
+		}
+		byID[e.ID] = e
+		fmt.Fprintf(&b, "<entry id=%q date=%q kind=%q>\n%s\n</entry>\n\n", e.ID, entryDate(e.CreatedAt), e.Type, body)
+	}
+	if len(byID) == 0 {
+		return model.AskAnswer{}, errors.New("gemini: no entry text in scope")
+	}
+
+	period := strings.TrimSpace(q.PeriodLabel)
+	if period == "" {
+		period = "their journal"
+	}
+
+	prompt := fmt.Sprintf(`Here are the person's journal entries from %s, oldest first:
+
+%s
+Their question: %s
+
+Return ONLY a JSON object with exactly these fields:
+{
+  "answer": string,
+  "citations": [{"entryId": string, "quote": string}],
+  "followUps": [string]
+}
+
+- answer: your grounded reply, in the voice described above.
+- citations: the entries you drew on (at most 4). entryId must be copied exactly from an entry above. quote must be a short excerpt (under 140 characters) taken from that entry. Use an empty list when no entry supports an answer.
+- followUps: two or three short questions they might naturally ask next about this period, phrased in their voice ("Did I...", "What was...").`, period, b.String(), strings.TrimSpace(q.Question))
+
+	contents := make([]content, 0, len(q.History)+1)
+	for _, m := range q.History {
+		text := strings.TrimSpace(m.Text)
+		if text == "" {
+			continue
+		}
+		role := "user"
+		if m.Role == "assistant" {
+			role = "model" // Gemini names the assistant turn "model"
+		}
+		contents = append(contents, content{Role: role, Parts: []part{{Text: text}}})
+	}
+	contents = append(contents, content{Role: "user", Parts: []part{{Text: prompt}}})
+
+	resp, err := c.generate(ctx, genRequest{
+		Contents:          contents,
+		SystemInstruction: &content{Parts: []part{{Text: askSystemPrompt}}},
+		GenerationConfig:  &genConfig{ResponseMimeType: "application/json"},
+	})
+	if err != nil {
+		return model.AskAnswer{}, err
+	}
+
+	raw := stripJSONFences(collectText(resp))
+	if raw == "" {
+		return model.AskAnswer{}, errors.New("gemini: empty ask response")
+	}
+
+	var parsed struct {
+		Answer    string          `json:"answer"`
+		Citations []citationClaim `json:"citations"`
+		FollowUps []string        `json:"followUps"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return model.AskAnswer{}, fmt.Errorf("gemini: parse ask JSON: %w", err)
+	}
+	if strings.TrimSpace(parsed.Answer) == "" {
+		return model.AskAnswer{}, errors.New("gemini: empty answer in ask response")
+	}
+
+	return model.AskAnswer{
+		Answer:      strings.TrimSpace(parsed.Answer),
+		Citations:   groundCitations(parsed.Citations, byID),
+		FollowUps:   nonNil(parsed.FollowUps),
+		EntriesUsed: len(byID),
+	}, nil
+}
+
+// citationClaim is a citation as the model returned it — unverified.
+type citationClaim struct {
+	EntryID string `json:"entryId"`
+	Quote   string `json:"quote"`
+}
+
+// maxQuoteChars caps a citation excerpt so one long quote can't dominate a card.
+const maxQuoteChars = 140
+
+// groundCitations turns the model's citation claims into citations we can stand
+// behind: it drops any entry id that was not in the prompt (a hallucinated id
+// would otherwise reach the client as a dead link) and any repeat, and it dates
+// each one from the stored entry rather than from anything the model said.
+func groundCitations(claims []citationClaim, byID map[string]model.JournalEntry) []model.AskCitation {
+	grounded := make([]model.AskCitation, 0, len(claims))
+	seen := make(map[string]bool, len(claims))
+	for _, claim := range claims {
+		e, ok := byID[claim.EntryID]
+		if !ok || seen[claim.EntryID] {
+			continue
+		}
+		seen[claim.EntryID] = true
+		grounded = append(grounded, model.AskCitation{
+			EntryID: e.ID,
+			Date:    e.CreatedAt,
+			Quote:   truncate(strings.TrimSpace(claim.Quote), maxQuoteChars),
+		})
+	}
+	return grounded
+}
+
+// entryDate renders an RFC3339 timestamp for the prompt, e.g.
+// "Monday 13 July 2026, 9:41 AM". It returns the input unchanged if unparseable.
+func entryDate(iso string) string {
+	t, err := time.Parse(time.RFC3339, iso)
+	if err != nil {
+		return iso
+	}
+	return t.Format("Monday 2 January 2006, 3:04 PM")
 }
 
 // Synthesize converts text to spoken audio using the Gemini text-to-speech
@@ -474,8 +650,8 @@ func pcmToWAV(pcm []byte, sampleRate int) []byte {
 	buf = binary.LittleEndian.AppendUint32(buf, uint32(36+dataSize)) // RIFF chunk size
 	buf = append(buf, "WAVE"...)
 	buf = append(buf, "fmt "...)
-	buf = binary.LittleEndian.AppendUint32(buf, 16)                  // PCM fmt chunk size
-	buf = binary.LittleEndian.AppendUint16(buf, 1)                   // audio format: PCM
+	buf = binary.LittleEndian.AppendUint32(buf, 16) // PCM fmt chunk size
+	buf = binary.LittleEndian.AppendUint16(buf, 1)  // audio format: PCM
 	buf = binary.LittleEndian.AppendUint16(buf, numChannels)
 	buf = binary.LittleEndian.AppendUint32(buf, uint32(sampleRate))
 	buf = binary.LittleEndian.AppendUint32(buf, uint32(byteRate))

@@ -1,4 +1,6 @@
 import type {
+  AskAnswer,
+  AskRequest,
   BillingPlan,
   BillingPlanKey,
   Entitlement,
@@ -160,6 +162,11 @@ export const api = {
 
   async generateInsight(period: InsightPeriod): Promise<InsightDigest> {
     return request(`/api/insights/generate?period=${period}`, { method: 'POST' });
+  },
+
+  /** Ask a question answered from the user's own entries in a period. */
+  async ask(body: AskRequest): Promise<AskAnswer> {
+    return request('/api/ask', { method: 'POST', body: JSON.stringify(body) });
   },
 
   async getProfile(): Promise<ProfileSettings> {

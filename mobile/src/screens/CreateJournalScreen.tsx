@@ -13,7 +13,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   AppState,
+  Easing,
   Image,
   Pressable,
   ScrollView,
@@ -25,7 +27,15 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { AppShell, ConfirmModal, IconButton, PrimaryButton, ScreenHeader, SegmentedControl } from '../components';
+import {
+  AppShell,
+  ConfirmModal,
+  IconButton,
+  PrimaryButton,
+  ScreenHeader,
+  SegmentedControl,
+  WaveformPlayer,
+} from '../components';
 import { api } from '../lib/api';
 import { formatDuration, formatWeekdayMonthDay } from '../lib/format';
 import { pickImages } from '../lib/media';
@@ -39,7 +49,6 @@ type Mode = 'text' | 'voice';
 type Phase = 'idle' | 'recording' | 'recorded';
 type TranscriptStatus = 'idle' | 'loading' | 'done' | 'error';
 
-const WAVE_BARS = [10, 18, 28, 20, 34, 24, 40, 30, 22, 36, 16, 28, 42, 26, 18, 30, 22, 34, 14, 24];
 const MAX_PHOTOS = 6;
 
 export function CreateJournalScreen() {
@@ -85,6 +94,10 @@ export function CreateJournalScreen() {
 
   const liveDuration = (recorderState.durationMillis ?? 0) / 1000;
   const displayDuration = phase === 'recorded' ? finalDuration : liveDuration;
+  const playProgress =
+    playerStatus.duration && playerStatus.duration > 0
+      ? Math.min(1, (playerStatus.currentTime ?? 0) / playerStatus.duration)
+      : 0;
 
   useEffect(() => {
     return () => {
@@ -92,6 +105,54 @@ export function CreateJournalScreen() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Live pulse around the mic while recording: two concentric rings ripple
+  // outward (scale up + fade) on a staggered loop, and the button itself
+  // breathes gently. Idle/recorded, everything rests at its resting scale.
+  const pulseOuter = useRef(new Animated.Value(0)).current;
+  const pulseInner = useRef(new Animated.Value(0)).current;
+  const breathe = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (phase !== 'recording') {
+      [pulseOuter, pulseInner, breathe].forEach((a) => {
+        a.stopAnimation();
+        a.setValue(0);
+      });
+      return;
+    }
+    const ripple = (a: Animated.Value, delay: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(a, {
+            toValue: 1,
+            duration: 1600,
+            easing: Easing.out(Easing.ease),
+            useNativeDriver: true,
+          }),
+        ]),
+      );
+    const breatheLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(breathe, {
+          toValue: 1,
+          duration: 900,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(breathe, {
+          toValue: 0,
+          duration: 900,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    const loops = [ripple(pulseOuter, 0), ripple(pulseInner, 800), breatheLoop];
+    loops.forEach((l) => l.start());
+    return () => loops.forEach((l) => l.stop());
+  }, [phase, pulseOuter, pulseInner, breathe]);
 
   const runTranscription = async (uri: string) => {
     setStatus('loading');
@@ -242,6 +303,9 @@ export function CreateJournalScreen() {
       player.pause();
       return;
     }
+    // Recording leaves the audio session in record mode; switch it to playback
+    // (and allow sound on the iOS silent switch) before playing, or it's silent.
+    void setAudioModeAsync({ playsInSilentMode: true, allowsRecording: false });
     if (playerStatus.didJustFinish) void player.seekTo(0);
     player.play();
   };
@@ -353,20 +417,80 @@ export function CreateJournalScreen() {
                   {phase === 'recording' ? 'Tap to stop' : 'Tap to begin'}
                 </Text>
                 <View style={styles.micWrap}>
-                  <View style={[styles.ring, styles.ringOuter]} />
-                  <View style={[styles.ring, styles.ringInner]} />
-                  <Pressable
-                    onPress={phase === 'recording' ? stopRecording : startRecording}
-                    accessibilityRole="button"
-                    accessibilityLabel={phase === 'recording' ? 'Stop recording' : 'Start recording'}
-                    style={({ pressed }) => [styles.micButton, pressed && styles.pressed]}
+                  {phase === 'recording' ? (
+                    <>
+                      <Animated.View
+                        style={[
+                          styles.ring,
+                          styles.ringOuter,
+                          {
+                            opacity: pulseOuter.interpolate({
+                              inputRange: [0, 1],
+                              outputRange: [0.28, 0],
+                            }),
+                            transform: [
+                              {
+                                scale: pulseOuter.interpolate({
+                                  inputRange: [0, 1],
+                                  outputRange: [0.85, 1.4],
+                                }),
+                              },
+                            ],
+                          },
+                        ]}
+                      />
+                      <Animated.View
+                        style={[
+                          styles.ring,
+                          styles.ringInner,
+                          {
+                            opacity: pulseInner.interpolate({
+                              inputRange: [0, 1],
+                              outputRange: [0.34, 0],
+                            }),
+                            transform: [
+                              {
+                                scale: pulseInner.interpolate({
+                                  inputRange: [0, 1],
+                                  outputRange: [0.85, 1.4],
+                                }),
+                              },
+                            ],
+                          },
+                        ]}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <View style={[styles.ring, styles.ringOuter]} />
+                      <View style={[styles.ring, styles.ringInner]} />
+                    </>
+                  )}
+                  <Animated.View
+                    style={{
+                      transform: [
+                        {
+                          scale: breathe.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [1, 1.06],
+                          }),
+                        },
+                      ],
+                    }}
                   >
-                    {phase === 'recording' ? (
-                      <View style={styles.stopIcon} />
-                    ) : (
-                      <Ionicons name="mic" size={34} color={colors.onPrimary} />
-                    )}
-                  </Pressable>
+                    <Pressable
+                      onPress={phase === 'recording' ? stopRecording : startRecording}
+                      accessibilityRole="button"
+                      accessibilityLabel={phase === 'recording' ? 'Stop recording' : 'Start recording'}
+                      style={({ pressed }) => [styles.micButton, pressed && styles.pressed]}
+                    >
+                      {phase === 'recording' ? (
+                        <View style={styles.stopIcon} />
+                      ) : (
+                        <Ionicons name="mic" size={34} color={colors.onPrimary} />
+                      )}
+                    </Pressable>
+                  </Animated.View>
                 </View>
               </View>
               <View style={styles.voiceBottom}>
@@ -385,26 +509,11 @@ export function CreateJournalScreen() {
               <View style={styles.recordedHead}>
                 <Text style={styles.timer}>{formatDuration(finalDuration)}</Text>
                 <Text style={[type.label, styles.completeText]}>Recording complete</Text>
-                {/* Tap the waveform to play/pause the recording. */}
-                <Pressable
-                  onPress={togglePlay}
-                  accessibilityRole="button"
-                  accessibilityLabel={playerStatus.playing ? 'Pause recording' : 'Play recording'}
-                  style={({ pressed }) => [styles.player, pressed && styles.playerPressed]}
-                >
-                  <View style={styles.playButton}>
-                    <Ionicons
-                      name={playerStatus.playing ? 'pause' : 'play'}
-                      size={22}
-                      color={colors.onPrimary}
-                    />
-                  </View>
-                  <View style={[styles.wave, styles.waveFill]}>
-                    {WAVE_BARS.map((h, i) => (
-                      <View key={i} style={[styles.waveBar, { height: h }]} />
-                    ))}
-                  </View>
-                </Pressable>
+                <WaveformPlayer
+                  playing={playerStatus.playing}
+                  progress={playProgress}
+                  onToggle={togglePlay}
+                />
               </View>
 
               <View style={styles.voiceBottom}>
@@ -581,29 +690,6 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.85 },
   stopIcon: { width: 28, height: 28, borderRadius: 6, backgroundColor: colors.onPrimary },
   completeText: { marginTop: spacing.xs, color: colors.primaryDark },
-  player: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'stretch',
-    gap: spacing.md,
-    marginTop: spacing.xl,
-    backgroundColor: colors.softSurface,
-    borderRadius: radius.lg,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-  },
-  playerPressed: { opacity: 0.85 },
-  playButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  wave: { flexDirection: 'row', alignItems: 'center', height: 56, gap: 4 },
-  waveFill: { flex: 1, justifyContent: 'center' },
-  waveBar: { width: 4, borderRadius: 2, backgroundColor: colors.recording },
   voiceBottom: { gap: spacing.md, paddingBottom: spacing.sm },
 
   // Transcribe toggle

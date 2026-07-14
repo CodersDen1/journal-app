@@ -41,6 +41,43 @@ export interface InsightDigest {
   relatedEntryIds: string[];
 }
 
+/** One turn of an Ask conversation, replayed to the server so follow-ups resolve. */
+export interface AskMessage {
+  role: 'user' | 'assistant';
+  text: string;
+}
+
+/** An entry an answer drew on. The server only cites entries it actually read. */
+export interface AskCitation {
+  entryId: string;
+  /** ISO-8601 createdAt of the cited entry. */
+  date: string;
+  /** A short excerpt from that entry. */
+  quote: string;
+}
+
+/** The reply to one question about the journal (POST /api/ask). */
+export interface AskAnswer {
+  answer: string;
+  citations: AskCitation[];
+  /** Natural next questions, offered as chips. */
+  followUps: string[];
+  /** How many entries were in scope and read. */
+  entriesUsed: number;
+  /** True when the period held more entries than fit in one prompt. */
+  truncated: boolean;
+}
+
+export interface AskRequest {
+  question: string;
+  scope: 'week' | 'month' | 'all';
+  /** Inclusive start / exclusive end, ISO-8601. Omitted when scope is 'all'. */
+  from?: string;
+  to?: string;
+  /** Prior turns, oldest first. */
+  history: AskMessage[];
+}
+
 export type Plan = 'free' | 'pro';
 export type EntryMode = 'text' | 'voice';
 

@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useState } from 'react';
-import { FlatList, StyleSheet, Text, TextInput, View } from 'react-native';
+import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { AppShell, EmptyState, IconButton, JournalCard } from '../components';
 import { useAppNavigation } from '../navigation/useAppNavigation';
@@ -37,6 +37,28 @@ export function SearchScreen() {
     </View>
   );
 
+  // Search matches words; Ask answers questions. Whatever they typed is the best
+  // possible seed for a question, so offer the hand-off right where they typed it.
+  const askAboutQuery = () => navigation.navigate('Ask', { question: trimmed, scope: 'all' });
+
+  const askRow = (
+    <Pressable
+      onPress={askAboutQuery}
+      accessibilityRole="button"
+      accessibilityLabel={`Ask your journal about ${trimmed}`}
+      style={({ pressed }) => [styles.askRow, pressed && styles.askRowPressed]}
+    >
+      <Ionicons name="sparkles-outline" size={20} color={colors.primary} />
+      <View style={styles.askCopy}>
+        <Text style={type.label} numberOfLines={1}>
+          Ask “{trimmed}”
+        </Text>
+        <Text style={type.caption}>Get an answer drawn from your entries</Text>
+      </View>
+      <Ionicons name="chevron-forward" size={16} color={colors.mutedText} />
+    </Pressable>
+  );
+
   const renderBody = () => {
     if (!trimmed) {
       return (
@@ -53,7 +75,8 @@ export function SearchScreen() {
         <EmptyState
           icon="search-outline"
           title="No matches"
-          message="Nothing found for what you typed. Try another word."
+          message="No entry contains those words — but you can still ask about them."
+          action={{ label: 'Ask your journal', onPress: askAboutQuery }}
         />
       );
     }
@@ -65,6 +88,7 @@ export function SearchScreen() {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.list}
+        ListHeaderComponent={askRow}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
         renderItem={({ item }) => (
           <JournalCard
@@ -109,6 +133,19 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md,
   },
   separator: { height: spacing.md },
+  askRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    padding: spacing.lg,
+    marginBottom: spacing.md,
+  },
+  askRowPressed: { opacity: 0.6 },
+  askCopy: { flex: 1, gap: 2 },
   hintWrap: {
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.xl,

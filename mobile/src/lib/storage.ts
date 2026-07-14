@@ -11,6 +11,7 @@ const KEYS = {
   entries: 'still.entries.v1',
   profile: 'still.profile.v1',
   seeded: 'still.seeded.v1',
+  onboardingSeen: 'still.onboardingSeen.v1',
 } as const;
 
 async function readJSON<T>(key: string): Promise<T | null> {
@@ -50,7 +51,14 @@ export const storage = {
   async markSeeded(): Promise<void> {
     await AsyncStorage.setItem(KEYS.seeded, 'true');
   },
+  async hasSeenOnboarding(): Promise<boolean> {
+    const v = await AsyncStorage.getItem(KEYS.onboardingSeen);
+    return v === 'true';
+  },
+  async markOnboardingSeen(): Promise<void> {
+    await AsyncStorage.setItem(KEYS.onboardingSeen, 'true');
+  },
   async reset(): Promise<void> {
-    await AsyncStorage.multiRemove([KEYS.entries, KEYS.profile, KEYS.seeded]);
+    await AsyncStorage.multiRemove([KEYS.entries, KEYS.profile, KEYS.seeded, KEYS.onboardingSeen]);
   },
 };

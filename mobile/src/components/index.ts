@@ -4,6 +4,7 @@ export { BrandMark, CLAUDE_CLAY } from './BrandMark';
 export { ScreenHeader } from './ScreenHeader';
 export { JournalCard } from './JournalCard';
 export { TimelineEntryCard } from './TimelineEntryCard';
+export { WaveformPlayer } from './WaveformPlayer';
 export { PrimaryButton } from './PrimaryButton';
 export { SegmentedControl } from './SegmentedControl';
 export type { SegmentOption } from './SegmentedControl';

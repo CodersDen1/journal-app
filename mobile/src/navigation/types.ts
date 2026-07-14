@@ -9,6 +9,7 @@ export type TabParamList = {
 
 export type RootStackParamList = {
   Tabs: NavigatorScreenParams<TabParamList> | undefined;
+  Onboarding: undefined;
   CreateJournal:
     | {
         entryId?: string;
@@ -21,6 +22,8 @@ export type RootStackParamList = {
     | undefined;
   JournalDetail: { entryId: string };
   Search: undefined;
+  /** Chat grounded in the user's own entries. Params seed the first question / period. */
+  Ask: { question?: string; scope?: 'week' | 'month' | 'all' } | undefined;
   Profile: undefined;
   ReminderRhythm: undefined;
   /** Hour-by-hour timeline for a single day (defaults to today). */
